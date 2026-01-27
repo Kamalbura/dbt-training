@@ -1,0 +1,66 @@
+version: 2
+
+models:
+  - name: stg_stackoverflow__questions
+    description: "Staging layer for Stack Overflow questions related to data engineering"
+    columns:
+      - name: question_id
+        description: "Unique identifier for the question"
+        data_tests:
+          - unique
+          - not_null
+      - name: title
+        description: "Question title"
+        data_tests:
+          - not_null
+      - name: tags
+        description: "Pipe-separated list of tags"
+      - name: created_at
+        description: "When the question was created"
+        data_tests:
+          - not_null
+      - name: score
+        description: "Net votes for the question"
+      - name: view_count
+        description: "Number of views"
+      - name: answer_count
+        description: "Number of answers"
+      - name: has_accepted_answer
+        description: "Boolean - whether question has an accepted answer"
+      - name: score_category
+        description: "Categorized score: high, medium, neutral, negative"
+
+  - name: stg_stackoverflow__users
+    description: "Staging layer for Stack Overflow users with reputation >= 100"
+    columns:
+      - name: user_id
+        description: "Unique user identifier"
+        data_tests:
+          - unique
+          - not_null
+      - name: display_name
+        description: "User's display name"
+      - name: reputation
+        description: "User's reputation score"
+        data_tests:
+          - not_null
+      - name: user_tier
+        description: "Categorized user tier based on reputation"
+
+  - name: stg_stackoverflow__tags
+    description: "Staging layer for data engineering related Stack Overflow tags"
+    columns:
+      - name: tag_id
+        description: "Unique tag identifier"
+        data_tests:
+          - unique
+          - not_null
+      - name: tag_name
+        description: "Name of the tag"
+        data_tests:
+          - unique
+          - not_null
+      - name: question_count
+        description: "Number of questions with this tag"
+      - name: tag_category
+        description: "Category grouping for the tag"

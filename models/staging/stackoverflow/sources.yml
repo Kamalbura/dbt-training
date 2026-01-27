@@ -1,0 +1,71 @@
+version: 2
+
+sources:
+  - name: stackoverflow
+    description: "Public BigQuery Stack Overflow dataset - great for data engineering practice"
+    database: bigquery-public-data
+    schema: stackoverflow
+    tables:
+      - name: posts_questions
+        description: "All Stack Overflow questions with title, body, tags, score, etc."
+        columns:
+          - name: id
+            description: "Unique identifier for the question"
+          - name: title
+            description: "Question title"
+          - name: body
+            description: "Question body in HTML format"
+          - name: tags
+            description: "Pipe-separated list of tags"
+          - name: creation_date
+            description: "When the question was created"
+          - name: score
+            description: "Net votes (upvotes - downvotes)"
+          - name: view_count
+            description: "Number of views"
+          - name: answer_count
+            description: "Number of answers"
+          - name: accepted_answer_id
+            description: "ID of the accepted answer (if any)"
+          - name: owner_user_id
+            description: "User ID who asked the question"
+
+      - name: posts_answers
+        description: "All Stack Overflow answers"
+        columns:
+          - name: id
+            description: "Unique identifier for the answer"
+          - name: body
+            description: "Answer body in HTML format"
+          - name: parent_id
+            description: "Question ID this answer belongs to"
+          - name: creation_date
+            description: "When the answer was created"
+          - name: score
+            description: "Net votes for the answer"
+          - name: owner_user_id
+            description: "User ID who wrote the answer"
+
+      - name: users
+        description: "Stack Overflow users"
+        columns:
+          - name: id
+            description: "Unique user ID"
+          - name: display_name
+            description: "User's display name"
+          - name: reputation
+            description: "User's reputation score"
+          - name: creation_date
+            description: "When the user joined"
+          - name: location
+            description: "User's location"
+
+      - name: tags
+        description: "All Stack Overflow tags with usage counts"
+        columns:
+          - name: id
+            description: "Tag ID"
+          - name: tag_name
+            description: "Name of the tag"
+          - name: count
+            description: "Number of questions with this tag"
