@@ -37,6 +37,13 @@ clean-targets:         # directories to be removed by `dbt clean`
 
 models:
   my_new_project:
-    # Applies to all files under models/example/
-    example:
+    # Staging layer - cleaned and renamed source data
+    staging:
       +materialized: table
+      stackoverflow:
+        +schema: staging
+    # Marts layer - business-ready analytics tables
+    marts:
+      +materialized: table
+      analytics:
+        +schema: analytics
