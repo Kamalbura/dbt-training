@@ -1,0 +1,45 @@
+version: 2
+
+seeds:
+  - name: raw_customers
+    description: "Raw customer data from the jaffle shop e-commerce system"
+    columns:
+      - name: id
+        description: "Primary key - unique customer identifier"
+        data_tests:
+          - unique
+          - not_null
+      - name: first_name
+        description: "Customer's first name"
+      - name: last_name
+        description: "Customer's last name initial"
+
+  - name: raw_orders
+    description: "Raw order data from the jaffle shop e-commerce system"
+    columns:
+      - name: id
+        description: "Primary key - unique order identifier"
+        data_tests:
+          - unique
+          - not_null
+      - name: user_id
+        description: "Foreign key to customers"
+      - name: order_date
+        description: "Date the order was placed"
+      - name: status
+        description: "Order status (placed, shipped, completed, returned, return_pending)"
+
+  - name: raw_payments
+    description: "Raw payment data from the payment processor"
+    columns:
+      - name: id
+        description: "Primary key - unique payment identifier"
+        data_tests:
+          - unique
+          - not_null
+      - name: order_id
+        description: "Foreign key to orders"
+      - name: payment_method
+        description: "Method of payment (credit_card, coupon, bank_transfer, gift_card)"
+      - name: amount
+        description: "Payment amount in cents"

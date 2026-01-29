@@ -2,7 +2,7 @@
 # Name your project! Project names should contain only lowercase characters
 # and underscores. A good package name should reflect your organization's
 # name or the intended use of these models
-name: 'DBT-TRAINING'
+name: 'jaffle_shop'
 version: '1.0.0'
 config-version: 2
 
@@ -36,14 +36,10 @@ clean-targets:         # directories to be removed by `dbt clean`
 # using the `{{ config(...) }}` macro.
 
 models:
-  DBT-TRAINING:  # This should match your project name
-    # Staging layer - cleaned and renamed source data
+  jaffle_shop:
+    # Staging layer - cleaned and standardized data
     staging:
-      +materialized: table
-      stackoverflow:
-        +schema: staging
+      +materialized: view
     # Marts layer - business-ready analytics tables
     marts:
       +materialized: table
-      analytics:
-        +schema: analytics
