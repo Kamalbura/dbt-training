@@ -114,6 +114,28 @@ renamed AS (
 ),
 
 -- =============================================================================
+-- STEP 2.5: DEDUPLICATE - KEEP ONLY LATEST SYNC PER ORDER
+-- =============================================================================
+-- The source may have duplicate records from multiple sync batches.
+-- We keep only the most recent version of each order.
+
+deduplicated AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY order_id
+            ORDER BY synced_at DESC
+        ) AS _dedup_row_num
+    FROM renamed
+),
+
+filtered AS (
+    SELECT * EXCEPT(_dedup_row_num)
+    FROM deduplicated
+    WHERE _dedup_row_num = 1
+),
+
+-- =============================================================================
 -- STEP 3: ADD WINDOW FUNCTIONS FOR ANALYTICS
 -- =============================================================================
 -- Window functions calculate values across related rows WITHOUT collapsing them
@@ -185,9 +207,9 @@ with_window_functions AS (
             ORDER BY order_created_at
         ) AS daily_order_sequence
 
-    FROM renamed
-    -- Exclude test orders from analytics
-    WHERE CAST(test AS BOOL) = FALSE OR test IS NULL
+    FROM filtered
+    -- Exclude test orders from analytics — use the renamed boolean column
+    WHERE COALESCE(is_test_order, FALSE) = FALSE
 )
 
 SELECT * FROM with_window_functions

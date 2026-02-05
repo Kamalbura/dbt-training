@@ -105,6 +105,27 @@ renamed AS (
 ),
 
 -- =============================================================================
+-- DEDUPLICATE - KEEP ONLY ONE ROW PER LINE ITEM
+-- =============================================================================
+-- Multiple sync batches may create duplicate rows; keep the first occurrence.
+
+deduplicated AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY order_id, line_item_id
+            ORDER BY order_created_at DESC
+        ) AS _dedup_row_num
+    FROM renamed
+),
+
+filtered AS (
+    SELECT * EXCEPT(_dedup_row_num)
+    FROM deduplicated
+    WHERE _dedup_row_num = 1
+),
+
+-- =============================================================================
 -- ADD WINDOW FUNCTIONS FOR LINE ITEM ANALYTICS
 -- =============================================================================
 with_analytics AS (
@@ -140,7 +161,7 @@ with_analytics AS (
             ELSE FALSE 
         END AS is_single_item_order
 
-    FROM renamed
+    FROM filtered
 )
 
 SELECT * FROM with_analytics

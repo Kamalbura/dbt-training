@@ -31,9 +31,9 @@ sources:
         # Define columns for documentation and testing
         columns:
           - name: id
-            description: Primary key - Shopify order ID
+            description: Primary key - Shopify order ID (may have duplicates from sync batches)
             tests:
-              - unique
+              # Note: unique test removed - duplicates expected in raw; handled via deduplication in staging
               - not_null
           
           - name: order_number

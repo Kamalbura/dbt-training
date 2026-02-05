@@ -1,0 +1,131 @@
+================================================================================
+            WHY DBT SEED ISN'T IDEAL FOR YOUR SHOPIFY DATA
+================================================================================
+
+You asked: "Can we store it in seeds folder and run dbt seed?"
+
+TECHNICALLY POSSIBLE? ❌ No (for JSONL files)
+BETTER APPROACH? ✅ Manual upload to BigQuery
+
+Here's why:
+
+================================================================================
+                           DBT SEED LIMITATIONS
+================================================================================
+
+1. **FILE FORMAT**: Only CSV files
+   - ✅ CSV, TSV files work
+   - ❌ JSONL, JSON, XML don't work
+   - Your Shopify data is JSONL with nested arrays
+
+2. **DATA SIZE**: Meant for small reference data
+   - ✅ Country codes, product categories (small)
+   - ❌ Transactional data like orders (can be millions of rows)
+
+3. **USE CASE**: Static reference data
+   - ✅ Data that rarely changes
+   - ❌ Data that gets updated frequently
+
+================================================================================
+                           WHAT WE JUST DEMONSTRATED
+================================================================================
+
+We put your JSONL file in seeds/ and ran `dbt seed`:
+
+BEFORE:
+```
+seeds/
+├── .gitkeep
+└── shopify_orders.jsonl  ← Your data
+```
+
+AFTER running `dbt seed`:
+```
+seeds/
+├── .gitkeep
+├── shopify_orders.jsonl  ← Still there (ignored!)
+└── country_codes.csv     ← Added this CSV
+```
+
+RESULT: dbt seed created `dbt_training.country_codes` table in BigQuery
+        But COMPLETELY IGNORED your JSONL file!
+
+================================================================================
+                           BETTER APPROACHES FOR YOUR DATA
+================================================================================
+
+OPTION 1: MANUAL UPLOAD (What we recommend)
+------------------------------------------
+✅ Handles any file format (JSONL, CSV, etc.)
+✅ Preserves nested structures
+✅ One-time setup
+✅ Works with large datasets
+
+Steps:
+1. BigQuery Console → Create dataset `raw_shopify`
+2. Upload your JSONL file → Table `orders`
+3. Done! dbt can now read it
+
+OPTION 2: CONVERT TO CSV (Complex, not recommended)
+---------------------------------------------------
+❌ Would lose nested array data
+❌ Complex flattening required
+❌ Not version-control friendly
+❌ Still need manual upload
+
+OPTION 3: USE AN ETL TOOL (For production)
+-------------------------------------------
+✅ Airbyte, Fivetran, Stitch
+✅ Automated data loading
+✅ Handles complex schemas
+❌ More setup required
+
+================================================================================
+                           YOUR CURRENT SITUATION
+================================================================================
+
+You have two choices:
+
+CHOICE A: Manual Upload (Recommended)
+-------------------------------------
+1. Upload JSONL to BigQuery manually (once)
+2. Use dbt to transform it
+3. ✅ Simple, works perfectly
+
+CHOICE B: Try to force dbt seed (Not recommended)
+-----------------------------------------------
+1. Convert JSONL to CSV (lose nested data)
+2. Put CSV in seeds/
+3. Run dbt seed
+4. ❌ Complex, loses data structure
+
+================================================================================
+                           QUICK VERIFICATION
+================================================================================
+
+Check if your data is already loaded:
+
+```sql
+-- Run in BigQuery console
+SELECT
+  COUNT(*) as total_orders,
+  MIN(created_at) as earliest_order,
+  MAX(created_at) as latest_order
+FROM `saras-bigquery.raw_shopify.orders`
+```
+
+If this returns data → You're ready to run dbt!
+If this fails → You need to upload the data first.
+
+================================================================================
+                           RECOMMENDATION
+================================================================================
+
+**Use manual upload to BigQuery.** It's the right tool for your Shopify data.
+
+dbt seed is great for:
+- Country codes
+- Product categories  
+- Static reference data
+
+Your Shopify orders are transactional data that belongs in BigQuery directly.

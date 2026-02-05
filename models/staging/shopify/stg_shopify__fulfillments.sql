@@ -105,6 +105,27 @@ renamed AS (
 ),
 
 -- =============================================================================
+-- DEDUPLICATE - KEEP ONLY ONE ROW PER FULFILLMENT
+-- =============================================================================
+-- Multiple sync batches may create duplicate rows; keep the latest.
+
+deduplicated AS (
+    SELECT
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY fulfillment_id
+            ORDER BY fulfillment_updated_at DESC
+        ) AS _dedup_row_num
+    FROM renamed
+),
+
+filtered AS (
+    SELECT * EXCEPT(_dedup_row_num)
+    FROM deduplicated
+    WHERE _dedup_row_num = 1
+),
+
+-- =============================================================================
 -- ADD CALCULATED FIELDS AND WINDOW FUNCTIONS
 -- =============================================================================
 with_analytics AS (
@@ -135,25 +156,25 @@ with_analytics AS (
         
         -- Carrier standardization (group similar carriers)
         CASE
-            WHEN LOWER(fulfillment.tracking_company) LIKE '%fedex%' THEN 'FedEx'
-            WHEN LOWER(fulfillment.tracking_company) LIKE '%ups%' THEN 'UPS'
-            WHEN LOWER(fulfillment.tracking_company) LIKE '%usps%' THEN 'USPS'
-            WHEN LOWER(fulfillment.tracking_company) LIKE '%dhl%' THEN 'DHL'
-            ELSE COALESCE(fulfillment.tracking_company, 'Unknown')
+            WHEN LOWER(shipping_carrier) LIKE '%fedex%' THEN 'FedEx'
+            WHEN LOWER(shipping_carrier) LIKE '%ups%' THEN 'UPS'
+            WHEN LOWER(shipping_carrier) LIKE '%usps%' THEN 'USPS'
+            WHEN LOWER(shipping_carrier) LIKE '%dhl%' THEN 'DHL'
+            ELSE COALESCE(shipping_carrier, 'Unknown')
         END AS shipping_carrier_standardized,
         
         -- Delivery status flags
         CASE 
-            WHEN LOWER(fulfillment.shipment_status) = 'delivered' THEN TRUE 
+            WHEN shipment_status = 'delivered' THEN TRUE 
             ELSE FALSE 
         END AS is_delivered,
         
         CASE 
-            WHEN LOWER(fulfillment.shipment_status) = 'in_transit' THEN TRUE 
+            WHEN shipment_status = 'in_transit' THEN TRUE 
             ELSE FALSE 
         END AS is_in_transit
 
-    FROM renamed
+    FROM filtered
 )
 
 SELECT * FROM with_analytics
