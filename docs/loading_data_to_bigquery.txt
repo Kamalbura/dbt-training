@@ -1,0 +1,120 @@
+================================================================================
+            LOADING JSONL DATA TO BIGQUERY - STEP BY STEP
+================================================================================
+
+BEFORE dbt CAN READ YOUR DATA:
+------------------------------
+You need to load the raw JSONL file into BigQuery first.
+dbt transforms data that's ALREADY in your warehouse - it doesn't load files.
+
+
+OPTION 1: BIGQUERY CONSOLE (Easiest)
+-------------------------------------
+
+1. Go to https://console.cloud.google.com/bigquery
+
+2. Create a dataset for raw data:
+   - Click your project name
+   - Click "CREATE DATASET"
+   - Dataset ID: raw_shopify
+   - Data location: Choose your region (US, EU, etc.)
+   - Click "CREATE DATASET"
+
+3. Create table from file:
+   - Click the raw_shopify dataset
+   - Click "CREATE TABLE"
+   - Create table from: Upload
+   - Select file: bquxjob_12dd921d_19c2829b22b_yourgpt.jsonl
+   - File format: JSONL (Newline delimited JSON)
+   - Table name: orders
+   - Schema: Check "Auto detect"
+   - Click "CREATE TABLE"
+
+
+OPTION 2: BQ COMMAND LINE
+-------------------------
+
+# Install gcloud CLI first: https://cloud.google.com/sdk/docs/install
+
+# Create dataset
+bq mk --dataset your-project-id:raw_shopify
+
+# Load JSONL file
+bq load \
+  --source_format=NEWLINE_DELIMITED_JSON \
+  --autodetect \
+  your-project-id:raw_shopify.orders \
+  ./RAW_DATASETS/bquxjob_12dd921d_19c2829b22b_yourgpt.jsonl
+
+
+OPTION 3: USING PYTHON
+----------------------
+
+```python
+from google.cloud import bigquery
+
+client = bigquery.Client(project='your-project-id')
+
+# Configure the load job
+job_config = bigquery.LoadJobConfig(
+    source_format=bigquery.SourceFormat.NEWLINE_DELIMITED_JSON,
+    autodetect=True,
+)
+
+# Load the file
+with open('RAW_DATASETS/bquxjob_12dd921d_19c2829b22b_yourgpt.jsonl', 'rb') as f:
+    job = client.load_table_from_file(
+        f,
+        'your-project-id.raw_shopify.orders',
+        job_config=job_config
+    )
+    job.result()  # Wait for completion
+
+print(f"Loaded {job.output_rows} rows")
+```
+
+
+AFTER LOADING - UPDATE dbt_project.yml:
+---------------------------------------
+
+Add your actual project details:
+
+```yaml
+vars:
+  raw_database: 'your-actual-gcp-project-id'
+  raw_schema: 'raw_shopify'
+```
+
+
+VERIFY DATA IS LOADED:
+----------------------
+
+Run this query in BigQuery console:
+
+```sql
+SELECT 
+  COUNT(*) as row_count,
+  MIN(created_at) as earliest_order,
+  MAX(created_at) as latest_order
+FROM `your-project-id.raw_shopify.orders`
+```
+
+
+NESTED DATA IN BIGQUERY:
+------------------------
+
+Your JSONL has nested arrays (line_items, fulfillments, etc.)
+BigQuery stores these as REPEATED RECORD types.
+
+To query nested data:
+```sql
+SELECT 
+  id,
+  order_number,
+  li.name as product_name,
+  li.price as product_price
+FROM `raw_shopify.orders`,
+UNNEST(line_items) as li
+```
+
+dbt staging models will handle this unnesting for you!

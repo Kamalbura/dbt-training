@@ -1,0 +1,122 @@
+================================================================================
+                    SOURCES IN DBT - EXPLAINED FOR BEGINNERS
+================================================================================
+
+WHAT IS A SOURCE?
+-----------------
+A SOURCE is dbt's way of pointing to raw data that already exists in your 
+data warehouse. Think of it as:
+
+  "Hey dbt, there's a table called 'orders' in BigQuery that I want to use!"
+
+Sources are NOT created by dbt - they already exist. Your data pipelines
+(Fivetran, Airbyte, Daton, custom ETL) load this data into your warehouse.
+
+
+SOURCE vs REF - THE KEY DIFFERENCE:
+-----------------------------------
+
+1. source('shopify_raw', 'orders')
+   - Points to EXTERNAL tables (raw data)
+   - Data loaded by external tools
+   - Use this in STAGING models only
+
+2. ref('stg_shopify__orders')
+   - Points to OTHER DBT MODELS
+   - Data created by dbt
+   - Use this in MARTS models
+
+
+ANATOMY OF _shopify__sources.yml:
+---------------------------------
+
+```yaml
+sources:
+  - name: shopify_raw           # 👈 Source group name
+    database: my-gcp-project    # 👈 BigQuery project ID
+    schema: raw_shopify         # 👈 BigQuery dataset name
+    
+    tables:
+      - name: orders            # 👈 Actual table name
+        columns:
+          - name: id
+            tests:
+              - unique          # 👈 Tests run on raw data
+              - not_null
+```
+
+
+HOW TO USE SOURCES IN SQL:
+--------------------------
+
+In your staging model (stg_shopify__orders.sql):
+
+```sql
+WITH source AS (
+    SELECT * FROM {{ source('shopify_raw', 'orders') }}
+    --           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    --           This compiles to: `my-gcp-project.raw_shopify.orders`
+)
+SELECT ...
+```
+
+
+VARIABLES (var) EXPLAINED:
+--------------------------
+
+In the sources file you'll see:
+  database: "{{ var('raw_database', 'your-gcp-project') }}"
+
+This means:
+  - Look for a variable called 'raw_database'
+  - If not found, use 'your-gcp-project' as default
+
+You can set variables in dbt_project.yml:
+```yaml
+vars:
+  raw_database: 'actual-project-id'
+  raw_schema: 'raw_shopify'
+```
+
+Or at runtime:
+```bash
+dbt run --vars '{"raw_database": "prod-project"}'
+```
+
+
+FRESHNESS CHECKS:
+-----------------
+
+Sources can check if data is being loaded regularly:
+
+```yaml
+freshness:
+  warn_after: {count: 24, period: hour}   # Alert if >24 hours old
+  error_after: {count: 48, period: hour}  # Fail if >48 hours old
+
+loaded_at_field: _daton_batch_runtime     # Column to check
+```
+
+Run freshness check:
+```bash
+dbt source freshness
+```
+
+
+WHY SOURCES MATTER:
+-------------------
+
+1. DOCUMENTATION: Sources appear in dbt docs
+2. LINEAGE: Shows where your data comes from
+3. TESTING: Run tests on raw data before transforming
+4. FRESHNESS: Monitor if data is stale
+5. ABSTRACTION: Change table location in one place
+
+
+NAMING CONVENTION:
+------------------
+
+File: _shopify__sources.yml
+          ↑
+          Leading underscore makes it appear first in folder
+          Double underscore separates source from file type

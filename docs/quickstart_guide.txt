@@ -1,0 +1,157 @@
+================================================================================
+                    QUICK START GUIDE - SHOPIFY ANALYTICS
+================================================================================
+
+STEP 1: LOAD RAW DATA TO BIGQUERY
+---------------------------------
+Before using dbt, load your JSONL file to BigQuery.
+See: docs/loading_data_to_bigquery.txt for detailed instructions.
+
+Quick version:
+1. Go to BigQuery Console
+2. Create dataset: raw_shopify  
+3. Upload bquxjob_12dd921d_19c2829b22b_yourgpt.jsonl as table: orders
+
+
+STEP 2: UPDATE PROJECT CONFIGURATION
+-------------------------------------
+Edit dbt_project.yml and change these lines:
+
+```yaml
+vars:
+  raw_database: 'your-gcp-project-id'    # Your BigQuery project ID
+  raw_schema: 'raw_shopify'              # Dataset name
+```
+
+
+STEP 3: VERIFY DBT CONNECTION
+-----------------------------
+```bash
+dbt debug
+```
+Should show: "All checks passed!"
+
+If errors, check your ~/.dbt/profiles.yml has correct BigQuery credentials.
+
+
+STEP 4: RUN YOUR FIRST BUILD
+----------------------------
+```bash
+# Compile SQL (no execution)
+dbt compile
+
+# Look at compiled SQL
+cat target/compiled/shopify_analytics/models/staging/shopify/stg_shopify__orders.sql
+
+# Run models (create views/tables)
+dbt run
+
+# Run tests
+dbt test
+
+# Or do both at once
+dbt build
+```
+
+
+STEP 5: EXPLORE YOUR DATA
+-------------------------
+After dbt run, you'll have these views in BigQuery:
+
+  {your_schema}_staging.stg_shopify__orders
+  {your_schema}_staging.stg_shopify__order_line_items  
+  {your_schema}_staging.stg_shopify__fulfillments
+
+
+STEP 6: VIEW DOCUMENTATION
+--------------------------
+```bash
+dbt docs generate
+dbt docs serve
+```
+Opens beautiful documentation site in your browser.
+
+
+================================================================================
+                           COMMON COMMANDS
+================================================================================
+
+dbt run                    # Build all models
+dbt run -s staging         # Build only staging folder
+dbt run -s stg_shopify__orders  # Build specific model
+
+dbt test                   # Run all tests
+dbt test -s stg_shopify__orders # Test specific model
+
+dbt build                  # Run + Test together
+dbt build -s staging       # Build + test staging only
+
+dbt compile                # Just generate SQL, don't run
+dbt clean                  # Remove target/ folder
+
+dbt deps                   # Install packages (from packages.yml)
+dbt source freshness       # Check if source data is fresh
+
+
+================================================================================
+                           PROJECT STRUCTURE
+================================================================================
+
+models/staging/shopify/
+├── _shopify__sources.yml      # Raw data source definitions
+├── _shopify__models.yml       # Model docs & tests
+├── stg_shopify__orders.sql    # Main orders (flat)
+├── stg_shopify__order_line_items.sql  # Products per order
+└── stg_shopify__fulfillments.sql      # Shipping/tracking
+
+docs/
+├── dbt_project_explained.txt
+├── folder_structure_explained.txt
+├── sources_explained.txt
+├── loading_data_to_bigquery.txt
+├── staging_and_window_functions_explained.txt
+├── nested_data_explained.txt
+├── schema_and_testing_explained.txt
+└── quickstart_guide.txt
+
+
+================================================================================
+                           LEARNING PATH
+================================================================================
+
+Read the docs/ files in this order:
+
+1. dbt_project_explained.txt      - Understand project config
+2. folder_structure_explained.txt - How to organize dbt projects
+3. sources_explained.txt          - Connecting to raw data
+4. loading_data_to_bigquery.txt   - Getting data into warehouse
+5. staging_and_window_functions_explained.txt - The SQL magic
+6. nested_data_explained.txt      - Handling JSON arrays
+7. schema_and_testing_explained.txt - Docs & tests
+
+
+================================================================================
+                           NEXT STEPS
+================================================================================
+
+After staging is working, you could:
+
+1. Create MARTS models:
+   - dim_customers (customer dimension)
+   - dim_products (product dimension)  
+   - fct_orders (order facts with metrics)
+
+2. Add more staging models:
+   - stg_shopify__discount_codes
+   - stg_shopify__shipping_lines
+   - stg_shopify__refunds
+
+3. Add custom tests:
+   - tests/assert_order_total_positive.sql
+   - tests/assert_fulfilled_orders_have_tracking.sql
+
+4. Create metrics/KPIs:
+   - Average Order Value (AOV)
+   - Customer Acquisition Cost (CAC)
+   - Customer Lifetime Value (CLV)
+   - Repeat Purchase Rate

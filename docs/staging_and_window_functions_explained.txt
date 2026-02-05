@@ -1,0 +1,185 @@
+================================================================================
+            STAGING MODELS & WINDOW FUNCTIONS - EXPLAINED
+================================================================================
+
+WHAT IS A STAGING MODEL?
+------------------------
+A staging model is the FIRST TRANSFORMATION you apply to raw data.
+It's like a "data cleaning station" before data moves to business tables.
+
+Think of it like this:
+  RAW DATA (messy) → STAGING (cleaned) → MARTS (business-ready)
+
+
+WHAT STAGING MODELS DO:
+-----------------------
+1. RENAME COLUMNS
+   Raw: id         → Clean: order_id
+   Raw: created_at → Clean: order_created_at
+   
+   Why? "id" is ambiguous. "order_id" tells you exactly what it is.
+
+2. CAST DATA TYPES
+   Raw: "2026-01-21 16:13:04" (string) → TIMESTAMP
+   Raw: "50.00" (string) → FLOAT64
+   
+   Why? Proper types enable date math, aggregations, etc.
+
+3. STANDARDIZE VALUES
+   Raw: "paid", "PAID", "Paid" → "paid" (lowercase)
+   Raw: NULL → "unfulfilled" (default value)
+
+4. HANDLE NESTED DATA
+   Extract important fields, or create separate models for arrays
+
+
+================================================================================
+                        WINDOW FUNCTIONS EXPLAINED
+================================================================================
+
+WHAT IS A WINDOW FUNCTION?
+--------------------------
+A window function calculates a value across a SET OF ROWS (a "window")
+while keeping all individual rows in the result.
+
+Regular Aggregation (GROUP BY):
+  - Collapses rows into groups
+  - Loses detail data
+  
+Window Function:
+  - Calculates across groups
+  - KEEPS all detail rows
+
+
+SYNTAX BREAKDOWN:
+-----------------
+
+```sql
+ROW_NUMBER() OVER (
+    PARTITION BY customer_id       -- 👈 "For each customer..."
+    ORDER BY order_created_at      -- 👈 "...sorted by date..."
+) AS customer_order_sequence       -- 👈 "...give me the row number"
+```
+
+OVER()          = "Across these rows"
+PARTITION BY    = "Group/reset for each unique value" (like GROUP BY)
+ORDER BY        = "Sort within each partition"
+
+
+THE 8 WINDOW FUNCTIONS WE USE:
+------------------------------
+
+1. ROW_NUMBER() - Sequential number within partition
+   Example: Customer's 1st order, 2nd order, 3rd order...
+   
+   ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY order_created_at)
+   Result: 1, 2, 3, 4... (resets for each customer)
+
+
+2. LAG() - Get value from PREVIOUS row
+   Example: When was this customer's LAST order?
+   
+   LAG(order_created_at) OVER (PARTITION BY customer_id ORDER BY order_created_at)
+   Result: NULL (first order), 2024-01-15, 2024-02-20...
+
+
+3. DATE_DIFF with LAG() - Days between orders
+   Example: How long since customer's previous order?
+   
+   DATE_DIFF(order_date, LAG(order_date) OVER (...), DAY)
+   Result: NULL, 30, 45, 7... (days between orders)
+
+
+4. SUM() OVER() with ROWS UNBOUNDED PRECEDING - Running total
+   Example: Cumulative customer spend
+   
+   SUM(total_amount) OVER (
+       PARTITION BY customer_id 
+       ORDER BY order_created_at
+       ROWS UNBOUNDED PRECEDING    -- 👈 "From first row to current row"
+   )
+   Result: $50, $120, $185... (keeps adding up)
+
+
+5. COUNT(*) OVER() - Count across partition
+   Example: How many total orders does this customer have?
+   
+   COUNT(*) OVER (PARTITION BY customer_id)
+   Result: Same value for all rows of that customer (e.g., 5, 5, 5, 5, 5)
+
+
+6. SUM() OVER() without ORDER BY - Total for partition
+   Example: Customer lifetime value
+   
+   SUM(total_amount) OVER (PARTITION BY customer_id)
+   Result: Same total for all rows of that customer
+
+
+7. CASE with ROW_NUMBER() - Flag first occurrence
+   Example: Is this the customer's first order?
+   
+   CASE WHEN ROW_NUMBER() OVER (...) = 1 THEN TRUE ELSE FALSE END
+   Result: TRUE, FALSE, FALSE, FALSE...
+
+
+8. ROW_NUMBER() with different partition - Daily sequence
+   Example: What order number is this within today?
+   
+   ROW_NUMBER() OVER (PARTITION BY DATE(order_created_at) ORDER BY order_created_at)
+   Result: 1, 2, 3... (resets each day)
+
+
+WHY USE WINDOW FUNCTIONS IN STAGING?
+------------------------------------
+
+✅ Calculate customer-level metrics without losing order details
+✅ Enable cohort analysis (first order vs repeat)
+✅ Support retention analysis (days between orders)
+✅ Prepare data for BI tools without complex joins
+✅ More efficient than self-joins for same calculations
+
+
+VISUAL EXAMPLE:
+---------------
+
+Original data:
+| customer_id | order_date | total |
+|-------------|------------|-------|
+| C001        | Jan 1      | $50   |
+| C001        | Jan 15     | $70   |
+| C001        | Feb 1      | $30   |
+| C002        | Jan 5      | $100  |
+
+After window functions:
+| customer_id | order_date | total | seq | prev_date | running_total | total_orders |
+|-------------|------------|-------|-----|-----------|---------------|--------------|
+| C001        | Jan 1      | $50   | 1   | NULL      | $50           | 3            |
+| C001        | Jan 15     | $70   | 2   | Jan 1     | $120          | 3            |
+| C001        | Feb 1      | $30   | 3   | Jan 15    | $150          | 3            |
+| C002        | Jan 5      | $100  | 1   | NULL      | $100          | 1            |
+
+Notice:
+- All original rows are preserved
+- Each row now has customer-level context
+- seq resets for each customer
+- running_total accumulates within customer
+
+
+COMMON WINDOW FUNCTION PATTERNS:
+--------------------------------
+
+1. FIRST VALUE / LAST VALUE:
+   FIRST_VALUE(product) OVER (PARTITION BY customer ORDER BY date)
+   → What was customer's first purchased product?
+
+2. LEAD (opposite of LAG):
+   LEAD(order_date) OVER (PARTITION BY customer ORDER BY date)
+   → When is customer's NEXT order?
+
+3. PERCENT_RANK / NTILE:
+   NTILE(4) OVER (ORDER BY total_amount)
+   → Split orders into quartiles by value
+
+4. MOVING AVERAGE:
+   AVG(total) OVER (ORDER BY date ROWS BETWEEN 6 PRECEDING AND CURRENT ROW)
+   → 7-day moving average

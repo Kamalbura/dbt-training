@@ -35,6 +35,19 @@ clean-targets:                      # Directories removed by `dbt clean`
 # Configure how models are materialized (view, table, incremental, ephemeral)
 # These settings cascade down the folder hierarchy
 
+# =============================================================================
+# VARIABLES
+# =============================================================================
+# Variables allow you to parameterize your project
+# Override at runtime: dbt run --vars '{"raw_database": "prod-project"}'
+
+vars:
+  # BigQuery project where raw data is stored
+  raw_database: 'your-gcp-project-id'     # 👈 CHANGE THIS to your project
+  
+  # BigQuery dataset where raw Shopify data lives
+  raw_schema: 'raw_shopify'               # 👈 Dataset with orders table
+
 models:
   shopify_analytics:
     # STAGING LAYER: Views for data cleaning

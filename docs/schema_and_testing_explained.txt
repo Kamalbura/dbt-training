@@ -1,0 +1,236 @@
+================================================================================
+            SCHEMA.YML & TESTING IN DBT - EXPLAINED FOR BEGINNERS
+================================================================================
+
+WHAT IS A SCHEMA.YML FILE?
+--------------------------
+A schema.yml file (we call ours _shopify__models.yml) serves TWO purposes:
+
+1. DOCUMENTATION: Describes what each model and column does
+2. TESTING: Defines tests to validate data quality
+
+
+WHY DOCUMENTATION MATTERS:
+--------------------------
+
+Without documentation:
+  - "What does 'customer_order_sequence' mean?" 
+  - "Can 'fulfillment_status' be NULL?"
+  - "Which table has order shipping info?"
+
+With documentation:
+  - Everything is self-explanatory
+  - New team members onboard faster
+  - Data consumers understand the data
+  - dbt generates beautiful docs website
+
+
+VIEWING DOCUMENTATION:
+----------------------
+
+Run these commands:
+```bash
+dbt docs generate    # Create documentation
+dbt docs serve       # Open in browser at localhost:8080
+```
+
+You'll see:
+- All models and their descriptions
+- Column-level documentation
+- Data lineage DAG (visual of how tables connect)
+- Test results
+
+
+================================================================================
+                           TESTING IN DBT
+================================================================================
+
+WHY TEST YOUR DATA?
+-------------------
+"Bad data in = bad decisions out"
+
+Tests catch issues like:
+  ❌ Duplicate primary keys
+  ❌ Missing required fields
+  ❌ Invalid status values
+  ❌ Broken foreign key relationships
+
+
+THE 4 BUILT-IN TESTS:
+---------------------
+
+1. UNIQUE
+   - Ensures no duplicate values
+   - Use on: Primary keys
+   
+   ```yaml
+   - name: order_id
+     tests:
+       - unique
+   ```
+
+2. NOT_NULL
+   - Ensures no NULL/missing values
+   - Use on: Required fields
+   
+   ```yaml
+   - name: order_created_at
+     tests:
+       - not_null
+   ```
+
+3. ACCEPTED_VALUES
+   - Ensures only specific values exist
+   - Use on: Status/category fields
+   
+   ```yaml
+   - name: payment_status
+     tests:
+       - accepted_values:
+           values: ['paid', 'pending', 'refunded']
+   ```
+
+4. RELATIONSHIPS
+   - Ensures foreign key exists in parent table
+   - Use on: Foreign keys
+   
+   ```yaml
+   - name: order_id
+     tests:
+       - relationships:
+           to: ref('stg_shopify__orders')
+           field: order_id
+   ```
+
+
+RUNNING TESTS:
+--------------
+
+```bash
+dbt test                              # Run all tests
+dbt test -s stg_shopify__orders       # Test specific model
+dbt test -s source:shopify_raw        # Test source data
+dbt build                             # Run models + tests together
+```
+
+
+TEST OUTPUT:
+------------
+
+✅ PASS: Test passed - data is valid
+❌ FAIL: Test failed - investigate the issue!
+⚠️ WARN: Soft failure - acceptable but flagged
+
+Failed tests show which rows have issues:
+```
+FAIL unique_stg_shopify__orders_order_id
+Got 3 duplicate order_ids: ['123', '456', '789']
+```
+
+
+HOW TESTS WORK UNDER THE HOOD:
+------------------------------
+
+Tests are just SQL that should return ZERO ROWS if passing.
+
+unique test compiles to:
+```sql
+SELECT order_id, count(*) as n_records
+FROM {{ ref('stg_shopify__orders') }}
+GROUP BY 1
+HAVING count(*) > 1
+-- If this returns rows, the test FAILS
+```
+
+not_null test compiles to:
+```sql
+SELECT *
+FROM {{ ref('stg_shopify__orders') }}
+WHERE order_id IS NULL
+-- If this returns rows, the test FAILS
+```
+
+
+CUSTOM TESTS (SINGULAR TESTS):
+------------------------------
+
+You can write your own test SQL in tests/ folder:
+
+tests/assert_positive_totals.sql:
+```sql
+-- Test that all order totals are positive
+SELECT order_id, total_amount
+FROM {{ ref('stg_shopify__orders') }}
+WHERE total_amount < 0
+-- Should return zero rows
+```
+
+
+YAML FILE NAMING CONVENTION:
+----------------------------
+
+We use: _shopify__models.yml
+
+The leading underscore (_) makes it appear at the TOP of the folder listing.
+The double underscore (__) separates the scope from the file type.
+
+You could also use:
+  - schema.yml (generic, common)
+  - _shopify__sources.yml (for sources)
+  - _shopify__models.yml (for models)
+
+
+DESCRIPTIONS WITH MARKDOWN:
+---------------------------
+
+Descriptions support Markdown formatting:
+
+```yaml
+description: |
+  Cleaned Shopify orders with customer metrics.
+  
+  **Grain:** One row per order
+  
+  **Key Features:**
+  - Window functions for customer context
+  - Nested arrays removed
+  
+  **Use Cases:**
+  - Order reporting
+  - Cohort analysis
+```
+
+The pipe (|) allows multi-line text.
+
+
+OUR MODELS & THEIR KEYS:
+------------------------
+
+stg_shopify__orders:
+  PK: order_id (unique, not_null)
+  FK: customer_id
+
+stg_shopify__order_line_items:
+  PK: line_item_id (unique, not_null)
+  FK: order_id → stg_shopify__orders.order_id
+
+stg_shopify__fulfillments:
+  PK: fulfillment_id (unique, not_null)
+  FK: order_id → stg_shopify__orders.order_id
+
+
+ENTITY RELATIONSHIP:
+--------------------
+
+                 ┌─────────────────┐
+                 │     ORDERS      │
+                 │   (order_id)    │
+                 └────────┬────────┘
+                          │
+          ┌───────────────┼───────────────┐
+          │ 1:N           │ 1:N           │
+          ▼               ▼               ▼
+┌─────────────────┐ ┌─────────────────┐   (other nested
+│   LINE_ITEMS    │ │  FULFILLMENTS   │    tables...)
+│ (line_item_id)  │ │(fulfillment_id) │
+└─────────────────┘ └─────────────────┘

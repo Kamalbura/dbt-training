@@ -1,0 +1,72 @@
+# =============================================================================
+# SHOPIFY SOURCES CONFIGURATION
+# =============================================================================
+# This file defines the raw data tables that dbt will read FROM.
+# Sources point to tables that already exist in your data warehouse.
+#
+# IMPORTANT: You need to load the JSONL file into BigQuery first!
+# See: docs/loading_data_to_bigquery.txt
+
+version: 2
+
+sources:
+  # A source is a collection of raw tables from one system
+  - name: shopify_raw                     # How you'll reference this in dbt
+    description: Raw Shopify order data synced via Daton integration
+    
+    # Database/Project where raw data lives (BigQuery project ID)
+    database: "{{ var('raw_database', 'your-gcp-project') }}"
+    
+    # Schema/Dataset where raw tables are stored
+    schema: "{{ var('raw_schema', 'raw_shopify') }}"
+    
+    # Freshness checks - alerts if data isn't loading
+    freshness:
+      warn_after: {count: 24, period: hour}   # Yellow alert
+      error_after: {count: 48, period: hour}  # Red alert
+    
+    # The actual tables in this source
+    tables:
+      - name: orders                        # Table name in BigQuery
+        description: |
+          Raw Shopify orders including all nested data like line items,
+          fulfillments, customer info, and shipping details.
+          Each row = one order with nested JSON arrays.
+        
+        # Column used to check data freshness
+        loaded_at_field: _daton_batch_runtime
+        
+        # Define columns for documentation and testing
+        columns:
+          - name: id
+            description: Primary key - Shopify order ID
+            tests:
+              - unique
+              - not_null
+          
+          - name: order_number
+            description: Human-readable order number (e.g., "730928")
+          
+          - name: created_at
+            description: When the order was placed (UTC timestamp)
+          
+          - name: total_price
+            description: Final order total including tax and discounts
+          
+          - name: financial_status
+            description: Payment status (paid, pending, refunded, etc.)
+          
+          - name: fulfillment_status
+            description: Shipping status (fulfilled, partial, null)
+          
+          - name: line_items
+            description: NESTED ARRAY - Products purchased in this order
+          
+          - name: fulfillments
+            description: NESTED ARRAY - Shipping/tracking information
+          
+          - name: customer
+            description: NESTED ARRAY - Customer details and address
+          
+          - name: shipping_address
+            description: NESTED ARRAY - Delivery address

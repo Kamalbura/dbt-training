@@ -1,0 +1,197 @@
+================================================================================
+            HANDLING NESTED DATA IN DBT/BIGQUERY - EXPLAINED
+================================================================================
+
+WHAT IS NESTED DATA?
+--------------------
+Your Shopify JSON has ARRAYS inside each order:
+
+```json
+{
+  "id": "5946576568372",
+  "order_number": "730928",
+  "line_items": [                    ← ARRAY (nested)
+    {"id": "1", "title": "Carnitine", "price": "90.00"},
+    {"id": "2", "title": "Protein", "price": "45.00"}
+  ],
+  "fulfillments": [                  ← ARRAY (nested)
+    {"id": "99", "tracking_number": "12345"}
+  ]
+}
+```
+
+BigQuery stores these as REPEATED RECORD types (arrays of structs).
+
+
+THE PROBLEM WITH NESTED DATA:
+-----------------------------
+If you keep arrays in your main table:
+
+1. ❌ Can't easily filter by product name
+2. ❌ Can't aggregate by product
+3. ❌ Hard to join with other tables
+4. ❌ BI tools struggle with nested structures
+5. ❌ Violates normalization principles
+
+
+THE SOLUTION: UNNEST INTO SEPARATE TABLES
+-----------------------------------------
+
+BEFORE (nested):
+| order_id | line_items: [{...}, {...}] |
+
+AFTER (unnested):
+| order_id | line_item_id | product_name | price |
+|----------|--------------|--------------|-------|
+| 123      | 1            | Carnitine    | 90.00 |
+| 123      | 2            | Protein      | 45.00 |
+
+
+HOW UNNEST WORKS IN BIGQUERY:
+-----------------------------
+
+```sql
+SELECT
+    orders.id AS order_id,
+    line_item.id AS line_item_id,
+    line_item.title AS product_title
+FROM orders,
+UNNEST(line_items) AS line_item      -- 👈 Creates a row per array element
+```
+
+Think of UNNEST like "exploding" the array:
+
+  Order 123 with 3 items → 3 rows (all with order_id = 123)
+  Order 456 with 1 item  → 1 row
+
+
+THE CROSS JOIN HAPPENING:
+-------------------------
+UNNEST is actually a special kind of JOIN.
+
+This:
+```sql
+FROM orders, UNNEST(line_items) AS li
+```
+
+Is similar to:
+```sql
+FROM orders
+CROSS JOIN UNNEST(orders.line_items) AS li
+```
+
+Each order row is "crossed" with each element of its array.
+
+
+HANDLING EMPTY ARRAYS:
+----------------------
+
+⚠️ WARNING: If an order has NO line items, it won't appear in the result!
+
+To keep orders without line items, use LEFT JOIN:
+```sql
+FROM orders
+LEFT JOIN UNNEST(line_items) AS line_item
+```
+
+In our models, we assume all orders have line items (or filter them out).
+
+
+ACCESSING NESTED FIELDS:
+------------------------
+
+Array element is a STRUCT (object), access fields with dot notation:
+
+```sql
+UNNEST(line_items) AS li
+
+-- Then access:
+li.id
+li.title
+li.price
+li.quantity
+```
+
+
+SAFE_OFFSET FOR SINGLE-ELEMENT ARRAYS:
+--------------------------------------
+
+Sometimes you have an array with exactly one element (like customer):
+
+```sql
+customer[SAFE_OFFSET(0)].id AS customer_id
+```
+
+- [OFFSET(0)] = First element (fails if empty)
+- [SAFE_OFFSET(0)] = First element or NULL if empty
+
+
+OUR DATA MODEL DESIGN:
+----------------------
+
+ORDERS TABLE (main entity):
+- order_id (PK)
+- customer_id
+- total_amount
+- order_date
+- ... (flat fields only)
+
+LINE_ITEMS TABLE (extracted nested):
+- line_item_id (PK)
+- order_id (FK) ← joins back to orders
+- product_id
+- quantity
+- price
+- ...
+
+FULFILLMENTS TABLE (extracted nested):
+- fulfillment_id (PK)
+- order_id (FK) ← joins back to orders
+- tracking_number
+- carrier
+- status
+- ...
+
+
+WHY THIS IS BETTER:
+-------------------
+
+1. ✅ Each table has ONE entity type
+2. ✅ Easy to query products: SELECT * FROM line_items WHERE sku = 'X'
+3. ✅ Easy to aggregate: SUM(quantity) GROUP BY product_id
+4. ✅ Standard relational model - works with any BI tool
+5. ✅ Clear relationships via foreign keys
+6. ✅ Better performance (less data scanned for focused queries)
+
+
+JOINING THE TABLES:
+-------------------
+
+To recreate the full picture:
+
+```sql
+SELECT
+    o.order_id,
+    o.total_amount,
+    li.product_title,
+    li.quantity,
+    f.tracking_number,
+    f.shipment_status
+FROM {{ ref('stg_shopify__orders') }} o
+LEFT JOIN {{ ref('stg_shopify__order_line_items') }} li
+    ON o.order_id = li.order_id
+LEFT JOIN {{ ref('stg_shopify__fulfillments') }} f
+    ON o.order_id = f.order_id
+```
+
+
+OTHER NESTED FIELDS YOU COULD EXTRACT:
+--------------------------------------
+
+From your data, you could also create:
+- stg_shopify__discount_codes (discount_codes array)
+- stg_shopify__shipping_lines (shipping_lines array)
+- stg_shopify__tax_lines (tax_lines array)
+- stg_shopify__refunds (refunds array)
+
+For now, we've extracted the two most commonly used: line_items and fulfillments.

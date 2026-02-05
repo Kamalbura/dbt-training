@@ -1,0 +1,279 @@
+# =============================================================================
+# SHOPIFY STAGING MODELS - DOCUMENTATION & TESTS
+# =============================================================================
+# This file documents all staging models and defines tests to ensure data quality.
+#
+# YAML STRUCTURE:
+#   models:
+#     - name: model_name
+#       description: What this model does
+#       columns:
+#         - name: column_name
+#           description: What this column contains
+#           tests:
+#             - unique       # No duplicate values
+#             - not_null     # No NULL values
+#             - accepted_values  # Only these values allowed
+#             - relationships    # Foreign key exists in another table
+# =============================================================================
+
+version: 2
+
+models:
+  # ===========================================================================
+  # ORDERS MODEL
+  # ===========================================================================
+  - name: stg_shopify__orders
+    description: |
+      Cleaned Shopify orders with customer-level window function metrics.
+      
+      **Grain:** One row per order
+      
+      **Key Features:**
+      - Nested arrays (line_items, fulfillments) removed - see separate models
+      - Window functions add customer-level context:
+        - Order sequence number
+        - Days since previous order
+        - Running spend total
+        - Customer lifetime value
+      
+      **Use Cases:**
+      - Order-level reporting
+      - Customer cohort analysis
+      - Retention metrics
+    
+    columns:
+      # Primary Key
+      - name: order_id
+        description: Primary key - unique Shopify order identifier
+        tests:
+          - unique
+          - not_null
+      
+      # Foreign Key
+      - name: customer_id
+        description: Foreign key to customer (extracted from nested customer array)
+        tests:
+          - not_null
+      
+      # Identifiers
+      - name: order_name
+        description: Human-readable order reference (e.g., "#JC730928")
+      
+      - name: order_number
+        description: Sequential order number as integer
+      
+      # Timestamps
+      - name: order_created_at
+        description: When the order was placed (UTC)
+        tests:
+          - not_null
+      
+      - name: order_processed_at
+        description: When the order was processed
+      
+      - name: order_closed_at
+        description: When the order was closed/completed (NULL if open)
+      
+      # Financial
+      - name: total_amount
+        description: Final order total including tax and after discounts
+        tests:
+          - not_null
+      
+      - name: subtotal_amount
+        description: Order subtotal before tax and discounts
+      
+      - name: discount_amount
+        description: Total discount applied to order
+      
+      - name: tax_amount
+        description: Total tax amount
+      
+      # Status
+      - name: payment_status
+        description: Payment status (lowercase)
+        tests:
+          - accepted_values:
+              values: ['paid', 'pending', 'refunded', 'partially_refunded', 'voided', 'authorized']
+      
+      - name: fulfillment_status
+        description: Shipping status (lowercase, defaults to 'unfulfilled')
+        tests:
+          - accepted_values:
+              values: ['fulfilled', 'unfulfilled', 'partial', 'restocked']
+      
+      # Source
+      - name: order_source
+        description: Where the order originated (TikTok, web, etc.)
+      
+      # Window Function Columns
+      - name: customer_order_sequence
+        description: |
+          Which order number is this for the customer? 
+          1 = first order, 2 = second order, etc.
+      
+      - name: previous_order_at
+        description: Timestamp of customer's previous order (NULL for first order)
+      
+      - name: days_since_previous_order
+        description: Days between this order and customer's previous order
+      
+      - name: customer_running_total
+        description: Cumulative spend for customer up to and including this order
+      
+      - name: customer_total_orders
+        description: Total number of orders this customer has placed (all-time)
+      
+      - name: customer_lifetime_value
+        description: Total amount customer has spent across all orders
+      
+      - name: is_first_order
+        description: TRUE if this is the customer's first order
+
+  # ===========================================================================
+  # LINE ITEMS MODEL
+  # ===========================================================================
+  - name: stg_shopify__order_line_items
+    description: |
+      Flattened line items from Shopify orders.
+      
+      **Grain:** One row per product per order
+      
+      **Source:** Unnested from orders.line_items array
+      
+      **Use Cases:**
+      - Product sales analysis
+      - SKU-level reporting
+      - Average order value by product
+      - Bundle analysis
+    
+    columns:
+      - name: line_item_id
+        description: Primary key - unique line item identifier
+        tests:
+          - unique
+          - not_null
+      
+      - name: order_id
+        description: Foreign key to stg_shopify__orders
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_shopify__orders')
+              field: order_id
+      
+      - name: product_id
+        description: Shopify product ID
+      
+      - name: variant_id
+        description: Shopify variant ID (specific size/color/etc.)
+      
+      - name: product_sku
+        description: Stock keeping unit code
+      
+      - name: product_title
+        description: Product name
+        tests:
+          - not_null
+      
+      - name: product_name
+        description: Full product name including variant
+      
+      - name: quantity
+        description: Number of units ordered
+        tests:
+          - not_null
+      
+      - name: unit_price
+        description: Price per unit
+        tests:
+          - not_null
+      
+      - name: line_total_before_discount
+        description: quantity * unit_price
+      
+      - name: line_item_sequence
+        description: Position of this item in the order (1, 2, 3...)
+      
+      - name: order_line_item_count
+        description: Total number of line items in this order
+      
+      - name: line_share_of_order
+        description: This line item's percentage of order total
+
+  # ===========================================================================
+  # FULFILLMENTS MODEL
+  # ===========================================================================
+  - name: stg_shopify__fulfillments
+    description: |
+      Flattened fulfillments (shipments) from Shopify orders.
+      
+      **Grain:** One row per fulfillment (shipment)
+      
+      **Source:** Unnested from orders.fulfillments array
+      
+      **Note:** Only orders with fulfillments appear here.
+      Pending/unfulfilled orders are NOT in this table.
+      
+      **Use Cases:**
+      - Shipping carrier analysis
+      - Time-to-ship metrics
+      - Delivery tracking
+      - Split shipment analysis
+    
+    columns:
+      - name: fulfillment_id
+        description: Primary key - unique fulfillment identifier
+        tests:
+          - unique
+          - not_null
+      
+      - name: order_id
+        description: Foreign key to stg_shopify__orders
+        tests:
+          - not_null
+          - relationships:
+              to: ref('stg_shopify__orders')
+              field: order_id
+      
+      - name: fulfillment_name
+        description: Fulfillment reference (e.g., "#JC730928.1")
+      
+      - name: fulfilled_at
+        description: When the fulfillment was created
+        tests:
+          - not_null
+      
+      - name: shipping_carrier
+        description: Original carrier name from Shopify
+      
+      - name: shipping_carrier_standardized
+        description: Standardized carrier name (FedEx, UPS, USPS, DHL, or original)
+      
+      - name: tracking_number
+        description: Shipment tracking number
+      
+      - name: tracking_url
+        description: URL to track the shipment
+      
+      - name: fulfillment_status
+        description: Status of the fulfillment (success, pending, cancelled)
+      
+      - name: shipment_status
+        description: Delivery status (confirmed, in_transit, delivered)
+      
+      - name: hours_to_fulfill
+        description: Hours between order creation and fulfillment
+      
+      - name: days_to_fulfill
+        description: Days between order creation and fulfillment
+      
+      - name: fulfillment_sequence
+        description: For split shipments, which shipment is this (1, 2, 3...)
+      
+      - name: is_split_shipment
+        description: TRUE if this order was shipped in multiple packages
+      
+      - name: is_delivered
+        description: TRUE if shipment_status is 'delivered'
