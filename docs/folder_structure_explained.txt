@@ -1,0 +1,85 @@
+================================================================================
+                    DBT FOLDER STRUCTURE - EXPLAINED
+================================================================================
+
+YOUR PROJECT STRUCTURE:
+-----------------------
+
+dbt-training/
+│
+├── dbt_project.yml          # Main project configuration
+├── packages.yml             # External dbt packages (optional)
+│
+├── models/                  # 👈 YOUR SQL TRANSFORMATION LOGIC LIVES HERE
+│   ├── staging/             # LAYER 1: Data cleaning
+│   │   └── shopify/         # Organized by source system
+│   │       ├── _shopify__sources.yml    # Source definitions
+│   │       ├── _shopify__models.yml     # Model documentation
+│   │       ├── stg_shopify__orders.sql  # Staging model
+│   │       └── stg_shopify__line_items.sql
+│   │
+│   └── marts/               # LAYER 2: Business-ready tables
+│       └── core/            # Core business entities
+│           ├── dim_customers.sql
+│           └── fct_orders.sql
+│
+├── seeds/                   # CSV files to load into your warehouse
+│   └── country_codes.csv    # Example: static reference data
+│
+├── macros/                  # Reusable SQL/Jinja functions
+│   └── generate_schema_name.sql
+│
+├── snapshots/               # Track slowly changing dimensions
+│   └── customer_snapshot.sql
+│
+├── tests/                   # Custom SQL tests
+│   └── assert_positive_orders.sql
+│
+├── analyses/                # Ad-hoc queries (not materialized)
+│   └── monthly_revenue.sql
+│
+├── docs/                    # 👈 EXPLANATION FILES FOR LEARNING
+│   ├── dbt_project_explained.txt
+│   └── folder_structure_explained.txt
+│
+└── target/                  # Compiled SQL (auto-generated, git-ignored)
+
+
+NAMING CONVENTIONS:
+-------------------
+
+1. STAGING MODELS: stg_{source}__{entity}.sql
+   - Example: stg_shopify__orders.sql
+   - Double underscore separates source from entity
+   - Always plural entity names
+
+2. MART MODELS: {type}_{entity}.sql
+   - dim_customers.sql (dimension = descriptive data)
+   - fct_orders.sql (fact = measurable events/transactions)
+
+3. YAML FILES: _{folder}__sources.yml or _{folder}__models.yml
+   - Leading underscore keeps them at top of folder
+   - Makes them easy to find
+
+
+THE STAGING LAYER - WHY?
+------------------------
+Raw data from source systems is messy:
+  ❌ Weird column names (like "id" everywhere)
+  ❌ Wrong data types (dates as strings)
+  ❌ Inconsistent nulls
+  ❌ Nested JSON structures
+
+Staging models fix this:
+  ✅ Rename columns (id → order_id)
+  ✅ Cast types (string → timestamp)
+  ✅ Handle nulls consistently
+  ✅ Flatten nested structures
+
+THE MARTS LAYER - WHY?
+----------------------
+Business users need ready-to-use tables:
+  ✅ Join multiple staging models
+  ✅ Add business logic (calculate metrics)
+  ✅ Create dimensional model (facts + dimensions)
+  ✅ Optimized for BI tools

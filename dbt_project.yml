@@ -1,45 +1,48 @@
+# =============================================================================
+# DBT PROJECT CONFIGURATION FILE
+# =============================================================================
+# This is the main configuration file for your dbt project.
+# It tells dbt where to find files and how to build your models.
 
-# Name your project! Project names should contain only lowercase characters
-# and underscores. A good package name should reflect your organization's
-# name or the intended use of these models
-name: 'jaffle_shop'
-version: '1.0.0'
-config-version: 2
+name: 'shopify_analytics'           # Project name (lowercase, underscores only)
+version: '1.0.0'                    # Semantic versioning
+config-version: 2                   # dbt config version (always use 2)
 
-# This setting configures which "profile" dbt uses for this project.
+# Profile defines your database connection (stored in ~/.dbt/profiles.yml)
 profile: 'default'
 
-# These configurations specify where dbt should look for different types of files.
-# The `model-paths` config, for example, states that models in this project can be
-# found in the "models/" directory. You probably won't need to change these!
-model-paths: ["models"]
-analysis-paths: ["analyses"]
-test-paths: ["tests"]
-seed-paths: ["seeds"]
-macro-paths: ["macros"]
-snapshot-paths: ["snapshots"]
+# =============================================================================
+# FILE PATHS - Where dbt looks for different file types
+# =============================================================================
+model-paths: ["models"]             # SQL models that create tables/views
+analysis-paths: ["analyses"]        # Ad-hoc SQL queries (not materialized)
+test-paths: ["tests"]               # Custom test SQL files
+seed-paths: ["seeds"]               # CSV files to load into warehouse
+macro-paths: ["macros"]             # Reusable SQL/Jinja functions
+snapshot-paths: ["snapshots"]       # Slowly changing dimension captures
 
-target-path: "target"  # directory which will store compiled SQL files
-clean-targets:         # directories to be removed by `dbt clean`
+# =============================================================================
+# OUTPUT PATHS
+# =============================================================================
+target-path: "target"               # Compiled SQL files stored here
+clean-targets:                      # Directories removed by `dbt clean`
   - "target"
   - "dbt_packages"
 
-
-# Configuring models
-# Full documentation: https://docs.getdbt.com/docs/configuring-models
-
-# In dbt, the default materialization for a model is a view. This means, when you run 
-# dbt run or dbt build, all of your models will be built as a view in your data platform. 
-# The configuration below will override this setting for models in the example folder to 
-# instead be materialized as tables. Any models you add to the root of the models folder will 
-# continue to be built as views. These settings can be overridden in the individual model files
-# using the `{{ config(...) }}` macro.
+# =============================================================================
+# MODEL CONFIGURATIONS
+# =============================================================================
+# Configure how models are materialized (view, table, incremental, ephemeral)
+# These settings cascade down the folder hierarchy
 
 models:
-  jaffle_shop:
-    # Staging layer - cleaned and standardized data
+  shopify_analytics:
+    # STAGING LAYER: Views for data cleaning
     staging:
-      +materialized: view
-    # Marts layer - business-ready analytics tables
+      +materialized: view           # Views = fast, no storage, always fresh
+      +schema: staging              # Creates models in "staging" schema
+    
+    # MARTS LAYER: Tables for business consumption
     marts:
-      +materialized: table
+      +materialized: table          # Tables = faster queries, uses storage
+      +schema: marts                # Creates models in "marts" schema

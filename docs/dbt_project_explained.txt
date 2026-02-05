@@ -1,0 +1,62 @@
+================================================================================
+                    dbt_project.yml - EXPLAINED FOR BEGINNERS
+================================================================================
+
+WHAT IS THIS FILE?
+------------------
+The dbt_project.yml is like the "settings file" for your entire dbt project.
+Think of it as the control center that tells dbt:
+  - What your project is called
+  - Where to find your SQL files
+  - How to build your models (as views or tables)
+
+KEY CONCEPTS:
+-------------
+
+1. PROJECT NAME (name: 'shopify_analytics')
+   - Must be lowercase with underscores only
+   - Used to reference models from other projects
+   - Appears in your database schema names
+
+2. PROFILE (profile: 'default')
+   - Links to your ~/.dbt/profiles.yml file
+   - Contains your database credentials (BigQuery, Snowflake, etc.)
+   - Never commit credentials to git!
+
+3. FILE PATHS
+   - model-paths: Where your SQL transformation files live
+   - seed-paths: Where CSV files for loading go
+   - macro-paths: Where reusable SQL functions are stored
+
+4. MATERIALIZATIONS
+   - VIEW: A saved query, no data storage, always fresh
+   - TABLE: Actual data stored, faster to query, uses storage
+   - INCREMENTAL: Only processes new/changed rows (advanced)
+   - EPHEMERAL: Exists only as CTE in other models
+
+5. SCHEMA CONFIGURATION (+schema: staging)
+   - Controls which schema/dataset models are created in
+   - Results in: {target_schema}_{custom_schema}
+   - Example: if target is "analytics" → creates "analytics_staging"
+
+FOLDER HIERARCHY:
+-----------------
+models/
+├── staging/          # Raw data cleaning - materialized as VIEWS
+│   └── shopify/      # Source-specific staging
+└── marts/            # Business-ready tables - materialized as TABLES
+    └── core/         # Core business entities
+
+WHY THIS STRUCTURE?
+-------------------
+- Separation of concerns: Each layer has a specific job
+- Staging = Clean raw data, rename columns, cast types
+- Marts = Join staging models, add business logic
+
+COMMON COMMANDS:
+----------------
+dbt run                 # Build all models
+dbt run -s staging      # Build only staging models
+dbt test                # Run all tests
+dbt build               # Run + Test together
+dbt compile             # Generate SQL without running
