@@ -1,0 +1,153 @@
+================================================================================
+WHAT IS DEDUPLICATION?
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders (623 raw records → some are duplicates!)
+================================================================================
+
+SIMPLE DEFINITION
+-----------------
+Deduplication = "De" + "Duplication" = Removing duplicates
+
+It's the process of identifying and removing duplicate records from your data
+so each entity (order, customer, product) appears only ONCE in your final table.
+
+
+REAL-WORLD ANALOGY
+------------------
+Imagine you have a contact book with these entries:
+
+    | Name          | Phone      | Last Updated |
+    |---------------|------------|--------------|
+    | John Smith    | 555-1234   | Jan 1, 2024  |   ← Original entry
+    | John Smith    | 555-1234   | Jan 15, 2024 |   ← Updated (same number)
+    | John Smith    | 555-9999   | Feb 1, 2024  |   ← Updated (new number!)
+    | Jane Doe      | 555-5678   | Jan 1, 2024  |
+
+You only want ONE row per person - the LATEST one:
+
+    | Name          | Phone      | Last Updated |
+    |---------------|------------|--------------|
+    | John Smith    | 555-9999   | Feb 1, 2024  |   ← Keep this (most recent)
+    | Jane Doe      | 555-5678   | Jan 1, 2024  |
+
+This is deduplication!
+
+
+WHY DO DUPLICATES EXIST IN YOUR SHOPIFY DATA?
+----------------------------------------------
+Your raw data comes from a tool called "Daton" that syncs Shopify data.
+Look at these columns in your JSONL file:
+
+    _daton_user_id      → Identifies WHO synced the data
+    _daton_batch_runtime → WHEN the data was synced (timestamp in milliseconds)
+    _daton_batch_id     → Unique ID for each sync batch
+
+Every time Daton syncs, it may pull the SAME orders again!
+
+Example of what happens:
+
+    SYNC #1 (January 1st):
+    ┌──────────────┬─────────────┬────────────────────┐
+    │ order_id     │ total_price │ _daton_batch_runtime│
+    ├──────────────┼─────────────┼────────────────────┤
+    │ 6218879934770│ 50.00       │ 1704067200000      │  ← Jan 1st sync
+    │ 6218879934771│ 75.00       │ 1704067200000      │
+    └──────────────┴─────────────┴────────────────────┘
+    
+    SYNC #2 (January 15th):
+    ┌──────────────┬─────────────┬────────────────────┐
+    │ order_id     │ total_price │ _daton_batch_runtime│
+    ├──────────────┼─────────────┼────────────────────┤
+    │ 6218879934770│ 50.00       │ 1705276800000      │  ← Same order, new sync!
+    │ 6218879934771│ 75.00       │ 1705276800000      │  ← Same order, new sync!
+    │ 6218879934772│ 100.00      │ 1705276800000      │  ← NEW order
+    └──────────────┴─────────────┴────────────────────┘
+
+After loading BOTH syncs, your raw table has:
+
+    ┌──────────────┬─────────────┬────────────────────┐
+    │ order_id     │ total_price │ _daton_batch_runtime│
+    ├──────────────┼─────────────┼────────────────────┤
+    │ 6218879934770│ 50.00       │ 1704067200000      │  ← DUPLICATE
+    │ 6218879934771│ 75.00       │ 1704067200000      │  ← DUPLICATE
+    │ 6218879934770│ 50.00       │ 1705276800000      │  ← DUPLICATE
+    │ 6218879934771│ 75.00       │ 1705276800000      │  ← DUPLICATE
+    │ 6218879934772│ 100.00      │ 1705276800000      │  ← UNIQUE
+    └──────────────┴─────────────┴────────────────────┘
+
+    5 rows but only 3 unique orders!
+    
+
+WHAT HAPPENS IF YOU DON'T DEDUPLICATE?
+--------------------------------------
+Without deduplication, your analytics will be WRONG:
+
+    ❌ Revenue appears HIGHER than reality
+       Real: 3 orders = $225
+       With dupes: 5 rows = $350 (56% overstated!)
+    
+    ❌ Order counts are inflated
+       Real: 3 orders
+       With dupes: 5 orders
+    
+    ❌ Customer metrics are wrong
+       "This customer ordered 5 times!" (actually 3)
+    
+    ❌ JOINs produce more rows than expected
+       "Why do I have 10,000 rows when I only have 5,000 orders?"
+
+
+THE GOAL OF DEDUPLICATION
+-------------------------
+Transform this (raw with duplicates):
+
+    ┌──────────────┬─────────────┬────────────────────┐
+    │ order_id     │ total_price │ synced_at          │
+    ├──────────────┼─────────────┼────────────────────┤
+    │ 6218879934770│ 50.00       │ 2024-01-01         │
+    │ 6218879934770│ 50.00       │ 2024-01-15         │  ← Keep this one (latest)
+    │ 6218879934771│ 75.00       │ 2024-01-01         │
+    │ 6218879934771│ 75.00       │ 2024-01-15         │  ← Keep this one (latest)
+    │ 6218879934772│ 100.00      │ 2024-01-15         │  ← Only version, keep it
+    └──────────────┴─────────────┴────────────────────┘
+
+Into this (clean, deduplicated):
+
+    ┌──────────────┬─────────────┬────────────────────┐
+    │ order_id     │ total_price │ synced_at          │
+    ├──────────────┼─────────────┼────────────────────┤
+    │ 6218879934770│ 50.00       │ 2024-01-15         │
+    │ 6218879934771│ 75.00       │ 2024-01-15         │
+    │ 6218879934772│ 100.00      │ 2024-01-15         │
+    └──────────────┴─────────────┴────────────────────┘
+
+    3 rows = 3 unique orders ✓
+
+
+KEY TERMINOLOGY
+---------------
+• PRIMARY KEY: The column(s) that uniquely identify each record
+  - For orders: order_id
+  - For line items: order_id + line_item_id (composite key)
+  - For fulfillments: fulfillment_id
+
+• DUPLICATE: A row with the same primary key as another row
+
+• DEDUPLICATION KEY: What we use to decide WHICH duplicate to keep
+  - Usually: timestamp, version number, or batch ID
+  - We keep the "latest" or "most recent" version
+
+• DETERMINISTIC: The same input always gives the same output
+  - Dedup logic should be deterministic (no randomness)
+
+
+NEXT STEPS
+----------
+Read the following files in order:
+1. 02_why_duplicates_in_shopify.txt  → Deep dive into YOUR specific data
+2. 03_deduplication_strategies.txt   → Different ways to deduplicate
+3. 04_row_number_technique.txt       → The method we use
+4. 05_implementation_walkthrough.txt → Line-by-line code explanation
+6. 06_testing_deduplication.txt      → How to verify it works
+

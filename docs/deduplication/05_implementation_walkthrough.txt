@@ -1,0 +1,304 @@
+================================================================================
+IMPLEMENTATION WALKTHROUGH: YOUR dbt DEDUPLICATION CODE
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders
+Files: stg_shopify__orders.sql, stg_shopify__order_line_items.sql, 
+       stg_shopify__fulfillments.sql
+================================================================================
+
+Let's walk through the EXACT code in your dbt models line by line.
+
+
+================================================================================
+FILE 1: stg_shopify__orders.sql
+================================================================================
+
+LOCATION: models/staging/shopify/stg_shopify__orders.sql
+
+This model:
+- Reads raw orders from BigQuery
+- Extracts customer ID from nested array
+- Renames and casts columns
+- DEDUPLICATES to keep one row per order
+- Adds window functions for analytics
+
+Let's focus on the deduplication section:
+
+
+THE RENAMED CTE (creates synced_at column)
+------------------------------------------
+
+    renamed AS (
+        SELECT
+            -- Primary Keys
+            CAST(id AS STRING) AS order_id,
+            customer_id_extracted AS customer_id,
+            
+            -- ... many columns ...
+            
+            -- Data sync fields (from Daton)
+            _daton_user_id,
+            TIMESTAMP_MILLIS(CAST(_daton_batch_runtime AS INT64)) AS synced_at,  ← OUR SORT KEY!
+            _daton_batch_id
+            
+        FROM extract_customer
+    ),
+
+WHAT'S HAPPENING:
+- TIMESTAMP_MILLIS() converts the Unix timestamp in milliseconds to a TIMESTAMP
+- _daton_batch_runtime = 1737705606000 (milliseconds since 1970)
+- synced_at = 2025-01-24 07:00:06 UTC (human readable)
+
+WHY:
+- We need a proper timestamp to sort by "most recent"
+- Timestamp type is easier to work with than raw milliseconds
+
+
+THE DEDUPLICATED CTE
+--------------------
+
+    deduplicated AS (
+        SELECT
+            *,
+            ROW_NUMBER() OVER (
+                PARTITION BY order_id
+                ORDER BY synced_at DESC
+            ) AS _dedup_row_num
+        FROM renamed
+    ),
+
+LINE-BY-LINE:
+
+    SELECT *,                              -- Keep ALL columns from renamed
+    
+    ROW_NUMBER() OVER (                    -- Calculate row number...
+        PARTITION BY order_id              -- Within each order_id group
+        ORDER BY synced_at DESC            -- Latest sync first (DESC)
+    ) AS _dedup_row_num                    -- Call the column "_dedup_row_num"
+    
+    FROM renamed                           -- Read from the renamed CTE
+
+The underscore prefix (_dedup_row_num) indicates this is a "helper" column
+that will be removed later. It's just for filtering, not for analysis.
+
+
+THE FILTERED CTE
+----------------
+
+    filtered AS (
+        SELECT * EXCEPT(_dedup_row_num)    -- Remove the helper column
+        FROM deduplicated
+        WHERE _dedup_row_num = 1           -- Keep only the first row
+    ),
+
+LINE-BY-LINE:
+
+    SELECT * EXCEPT(_dedup_row_num)        -- All columns EXCEPT the row number
+    FROM deduplicated
+    WHERE _dedup_row_num = 1               -- Only rows where row_num = 1
+
+EXCEPT is BigQuery-specific syntax. It means "all columns except these"
+This is cleaner than listing every column again.
+
+
+THE ANALYTICS CTE (uses filtered, not renamed)
+----------------------------------------------
+
+    with_window_functions AS (
+        SELECT
+            *,
+            ROW_NUMBER() OVER (...) AS customer_order_sequence,
+            -- ... other window functions ...
+        FROM filtered                       -- Uses DEDUPLICATED data!
+        WHERE COALESCE(is_test_order, FALSE) = FALSE
+    )
+
+CRITICAL: We do analytics on FILTERED (deduplicated) data, not RENAMED.
+Otherwise, duplicates would inflate our window function calculations!
+
+
+================================================================================
+FILE 2: stg_shopify__order_line_items.sql
+================================================================================
+
+LOCATION: models/staging/shopify/stg_shopify__order_line_items.sql
+
+This model:
+- UNNEST the line_items array (creates more rows!)
+- Deduplicates using COMPOSITE KEY (order_id + line_item_id)
+- Adds analytics
+
+
+WHY COMPOSITE KEY?
+------------------
+After UNNEST, we might have:
+
+    ┌──────────────────┬────────────────────┬────────────────────┐
+    │ order_id         │ line_item_id       │ synced_at          │
+    ├──────────────────┼────────────────────┼────────────────────┤
+    │ 6218879934770    │ 14906823049522     │ 2024-01-15         │  
+    │ 6218879934770    │ 14906823049522     │ 2024-01-01         │  ← Duplicate!
+    │ 6218879934770    │ 14906823082290     │ 2024-01-15         │  
+    │ 6218879934770    │ 14906823082290     │ 2024-01-01         │  ← Duplicate!
+    └──────────────────┴────────────────────┴────────────────────┘
+
+If we only PARTITION BY order_id, we'd keep just ONE line item per order!
+We need PARTITION BY order_id, line_item_id
+
+
+THE CODE:
+
+    deduplicated AS (
+        SELECT
+            *,
+            ROW_NUMBER() OVER (
+                PARTITION BY order_id, line_item_id    -- COMPOSITE KEY
+                ORDER BY order_created_at DESC         -- Latest order version
+            ) AS _dedup_row_num
+        FROM renamed
+    ),
+    
+    filtered AS (
+        SELECT * EXCEPT(_dedup_row_num)
+        FROM deduplicated
+        WHERE _dedup_row_num = 1
+    ),
+
+RESULT:
+- 1 row per (order_id, line_item_id) combination
+- If order 12345 has 3 line items, we get exactly 3 rows
+
+
+================================================================================
+FILE 3: stg_shopify__fulfillments.sql
+================================================================================
+
+LOCATION: models/staging/shopify/stg_shopify__fulfillments.sql
+
+This model:
+- Filters to orders that have fulfillments
+- UNNEST the fulfillments array
+- Deduplicates by fulfillment_id
+- Adds shipping analytics
+
+
+THE CODE:
+
+    deduplicated AS (
+        SELECT
+            *,
+            ROW_NUMBER() OVER (
+                PARTITION BY fulfillment_id              -- Fulfillment is unique
+                ORDER BY fulfillment_updated_at DESC     -- Most recently updated
+            ) AS _dedup_row_num
+        FROM renamed
+    ),
+
+WHY fulfillment_id ALONE?
+-------------------------
+Each fulfillment has a globally unique ID in Shopify.
+Unlike line items, fulfillments aren't just unique within an order—
+they're unique across ALL orders.
+
+WHY fulfillment_updated_at?
+---------------------------
+Fulfillments get updated when:
+- Tracking number is added
+- Shipment status changes (in_transit → delivered)
+- Carrier information is updated
+
+We want the VERSION with the latest updates.
+
+
+================================================================================
+THE COMPLETE PATTERN (TEMPLATE)
+================================================================================
+
+Use this template for any staging model with deduplication:
+
+    {{ config(materialized='view') }}
+    
+    WITH source AS (
+        SELECT * FROM {{ source('your_source', 'your_table') }}
+    ),
+    
+    renamed AS (
+        SELECT
+            -- Cast and rename columns
+            CAST(id AS STRING) AS entity_id,
+            -- ... other columns ...
+            TIMESTAMP(updated_at) AS updated_at  -- Your sort key
+        FROM source
+    ),
+    
+    deduplicated AS (
+        SELECT
+            *,
+            ROW_NUMBER() OVER (
+                PARTITION BY entity_id           -- Your primary key(s)
+                ORDER BY updated_at DESC         -- Your sort key
+            ) AS _dedup_row_num
+        FROM renamed
+    ),
+    
+    filtered AS (
+        SELECT * EXCEPT(_dedup_row_num)
+        FROM deduplicated
+        WHERE _dedup_row_num = 1
+    )
+    
+    SELECT * FROM filtered
+
+
+================================================================================
+CHOOSING YOUR SORT KEY
+================================================================================
+
+What column should you ORDER BY?
+
+    ┌─────────────────────────────┬───────────────────────────────────────────┐
+    │ Column                      │ When to Use                               │
+    ├─────────────────────────────┼───────────────────────────────────────────┤
+    │ updated_at                  │ Record has an "updated" timestamp         │
+    │ _daton_batch_runtime        │ ETL sync timestamp (your case)            │
+    │ created_at DESC, id DESC    │ No update timestamp, use creation + ID    │
+    │ _etl_loaded_at             │ Generic ETL load timestamp                │
+    │ version_number DESC         │ If records have version numbers           │
+    └─────────────────────────────┴───────────────────────────────────────────┘
+
+
+================================================================================
+COMMON MISTAKES TO AVOID
+================================================================================
+
+1. WRONG: Filtering before deduplication
+   
+   Bad:  SELECT * FROM source WHERE status = 'active'  -- Then dedupe
+   Good: Dedupe first, then filter
+   
+   Why: You might filter out the row you should keep!
+
+
+2. WRONG: Using ORDER BY ASC instead of DESC
+   
+   Bad:  ORDER BY synced_at ASC   -- Keeps OLDEST
+   Good: ORDER BY synced_at DESC  -- Keeps LATEST
+
+
+3. WRONG: Forgetting to update analytics CTE reference
+   
+   Bad:  FROM renamed  -- Still has duplicates!
+   Good: FROM filtered -- Deduplicated
+
+
+4. WRONG: Using wrong partition key
+   
+   Bad:  PARTITION BY order_id  -- For line items (loses items!)
+   Good: PARTITION BY order_id, line_item_id
+
+
+NEXT FILE: 06_testing_deduplication.txt
+---------------------------------------
+How to verify your deduplication is working correctly.
+

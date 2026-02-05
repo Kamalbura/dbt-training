@@ -1,0 +1,181 @@
+================================================================================
+WHY DO DUPLICATES EXIST IN YOUR SHOPIFY DATA?
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders - 623 raw records loaded from JSONL
+================================================================================
+
+YOUR DATA PIPELINE ARCHITECTURE
+-------------------------------
+Here's how your data flows:
+
+    ┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+    │   Shopify   │ ──► │    Daton    │ ──► │  BigQuery   │ ──► │     dbt     │
+    │   (Source)  │     │  (ETL Tool) │     │   (Raw)     │     │  (Staging)  │
+    └─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
+         │                    │                    │                    │
+    Orders are          Daton syncs          Raw table has          dbt cleans,
+    created here        data daily           ALL syncs              deduplicates
+
+
+WHAT IS DATON?
+--------------
+Daton is an ETL (Extract-Transform-Load) tool that:
+- Connects to Shopify's API
+- Pulls order data on a schedule (daily, hourly, etc.)
+- Loads it into BigQuery
+
+The problem: Daton uses an "APPEND" strategy, not "REPLACE"
+
+    APPEND: Add new rows to existing table (duplicates possible)
+    REPLACE: Delete old data, insert fresh copy (no duplicates)
+
+Most ETL tools use APPEND because:
+1. It's safer (no data loss if sync fails)
+2. It's faster (no delete operation needed)
+3. It provides history (you can see old versions)
+
+
+THE DATON METADATA COLUMNS IN YOUR DATA
+---------------------------------------
+Your JSONL file has special columns added by Daton:
+
+Column: _daton_user_id
+├── Purpose: Identifies which Daton account/user synced the data
+├── Example: "62"
+└── Your data: All rows have the same user ID
+
+Column: _daton_batch_runtime
+├── Purpose: Unix timestamp (in milliseconds) of when sync happened
+├── Example: 1737705606000 = 2025-01-24 07:00:06 UTC
+└── This is our DEDUPLICATION KEY - we keep the LATEST one!
+
+Column: _daton_batch_id
+├── Purpose: Unique identifier for each sync batch
+├── Example: "8f7b2a91-4c3d-..."
+└── All rows from same sync have same batch_id
+
+
+LET'S LOOK AT YOUR ACTUAL DATA
+------------------------------
+Running this query on your raw table:
+
+    SELECT 
+        id AS order_id,
+        COUNT(*) AS times_synced,
+        MIN(_daton_batch_runtime) AS first_sync,
+        MAX(_daton_batch_runtime) AS last_sync
+    FROM `saras-bigquery.raw_shopify.orders`
+    GROUP BY id
+    HAVING COUNT(*) > 1
+    ORDER BY times_synced DESC
+    LIMIT 10;
+
+Would show something like:
+
+    ┌─────────────────┬──────────────┬───────────────────┬───────────────────┐
+    │ order_id        │ times_synced │ first_sync        │ last_sync         │
+    ├─────────────────┼──────────────┼───────────────────┼───────────────────┤
+    │ 6218879934770   │ 3            │ 1735689600000     │ 1737705606000     │
+    │ 6218951468338   │ 3            │ 1735689600000     │ 1737705606000     │
+    │ 6219023001906   │ 2            │ 1736294400000     │ 1737705606000     │
+    └─────────────────┴──────────────┴───────────────────┴───────────────────┘
+
+This means:
+- Order 6218879934770 was synced 3 TIMES
+- First sync: January 1st
+- Last sync: January 24th
+- We have 3 rows for 1 order!
+
+
+WHY DOES DATON PULL THE SAME ORDERS MULTIPLE TIMES?
+----------------------------------------------------
+Several reasons:
+
+1. INCREMENTAL SYNC WITH OVERLAP
+   Daton might sync "orders updated in last 7 days"
+   If an order was updated 5 days ago, it gets pulled in:
+   - Yesterday's sync (order is 5 days old < 7 days)
+   - Today's sync (order is 6 days old < 7 days)
+   - Tomorrow's sync if updated again
+   
+2. ORDER UPDATES
+   When an order is modified in Shopify, Daton re-syncs it:
+   - Customer changed shipping address
+   - Fulfillment status changed
+   - Refund was processed
+   - Tags were added
+   
+3. FULL SYNC EVENTS
+   Sometimes schedulers do a "full sync" (all orders)
+   This creates duplicates for every existing order
+
+4. API PAGINATION EDGE CASES
+   Shopify API paginated results can sometimes include
+   the same order twice at page boundaries
+
+
+THE NESTED ARRAY PROBLEM
+------------------------
+Your data has NESTED ARRAYS which create even MORE complexity:
+
+    Order 6218879934770 (synced 3 times):
+    ├── Sync 1: line_items = [{item_A}, {item_B}]
+    ├── Sync 2: line_items = [{item_A}, {item_B}]
+    └── Sync 3: line_items = [{item_A}, {item_B}]
+
+When we UNNEST line_items:
+
+    ┌─────────────────┬──────────────┬──────────────────┐
+    │ order_id        │ line_item_id │ sync_batch       │
+    ├─────────────────┼──────────────┼──────────────────┤
+    │ 6218879934770   │ item_A       │ Sync 1           │
+    │ 6218879934770   │ item_B       │ Sync 1           │
+    │ 6218879934770   │ item_A       │ Sync 2           │  ← Duplicate!
+    │ 6218879934770   │ item_B       │ Sync 2           │  ← Duplicate!
+    │ 6218879934770   │ item_A       │ Sync 3           │  ← Duplicate!
+    │ 6218879934770   │ item_B       │ Sync 3           │  ← Duplicate!
+    └─────────────────┴──────────────┴──────────────────┘
+
+6 rows for 2 line items! 
+We need to deduplicate by (order_id + line_item_id)
+
+
+YOUR DEDUPLICATION STRATEGY
+---------------------------
+For each table, we use different keys:
+
+    TABLE: stg_shopify__orders
+    ├── Dedup Key: order_id
+    ├── Keep: Most recent sync (ORDER BY synced_at DESC)
+    └── Result: 1 row per order
+
+    TABLE: stg_shopify__order_line_items  
+    ├── Dedup Key: order_id + line_item_id (composite)
+    ├── Keep: Most recent sync (ORDER BY order_created_at DESC)
+    └── Result: 1 row per line item per order
+
+    TABLE: stg_shopify__fulfillments
+    ├── Dedup Key: fulfillment_id
+    ├── Keep: Most recent update (ORDER BY fulfillment_updated_at DESC)
+    └── Result: 1 row per fulfillment
+
+
+DATA QUALITY IMPLICATIONS
+-------------------------
+Before deduplication:
+- 623 raw rows
+- Unknown number of unique orders
+- Metrics would be inflated
+
+After deduplication:
+- Exact count of unique orders
+- Accurate revenue calculations
+- Correct customer order counts
+
+
+NEXT FILE: 03_deduplication_strategies.txt
+------------------------------------------
+Learn about different approaches to deduplication
+and why we chose the ROW_NUMBER() method.
+

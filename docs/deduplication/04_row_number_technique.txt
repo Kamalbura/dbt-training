@@ -1,0 +1,271 @@
+================================================================================
+THE ROW_NUMBER() DEDUPLICATION TECHNIQUE
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders
+================================================================================
+
+ROW_NUMBER() is a WINDOW FUNCTION that assigns a sequential integer to each row
+within a partition. Let's break it down completely.
+
+
+================================================================================
+ANATOMY OF ROW_NUMBER()
+================================================================================
+
+    ROW_NUMBER() OVER (
+        PARTITION BY order_id              -- 1. Grouping
+        ORDER BY synced_at DESC            -- 2. Ordering
+    ) AS row_num                           -- 3. Alias
+
+
+COMPONENT 1: PARTITION BY (The Grouping)
+----------------------------------------
+Divides your data into groups. ROW_NUMBER restarts at 1 for each group.
+
+    PARTITION BY order_id
+
+    ┌──────────┬───────────────┐
+    │ order_id │ ...           │
+    ├──────────┼───────────────┤
+    │ 12345    │ Partition 1   │  ← Row numbers 1, 2, 3...
+    │ 12345    │ Partition 1   │
+    │ 12346    │ Partition 2   │  ← Restart: Row numbers 1, 2...
+    │ 12346    │ Partition 2   │
+    │ 12347    │ Partition 3   │  ← Restart: Row numbers 1, 2...
+    └──────────┴───────────────┘
+
+Think of it like: "For each order_id, number the rows"
+
+
+COMPONENT 2: ORDER BY (Which Row Gets #1?)
+------------------------------------------
+Determines the sequence within each partition.
+
+    ORDER BY synced_at DESC    -- DESC = Descending = Latest first
+
+    ┌──────────┬────────────────────┬─────────┐
+    │ order_id │ synced_at          │ row_num │
+    ├──────────┼────────────────────┼─────────┤
+    │ 12345    │ 2024-01-15 10:00   │ 1       │  ← Latest = #1 (KEEP THIS)
+    │ 12345    │ 2024-01-01 10:00   │ 2       │  ← Older = #2
+    │ 12346    │ 2024-01-20 10:00   │ 1       │  ← Latest = #1 (KEEP THIS)
+    │ 12346    │ 2024-01-10 10:00   │ 2       │  ← Older = #2
+    └──────────┴────────────────────┴─────────┘
+
+If we used ORDER BY synced_at ASC (Ascending):
+    - Oldest row would be #1
+    - Latest row would be #2
+    - We'd keep the OLD data (usually wrong!)
+
+
+COMPONENT 3: AS row_num (The Alias)
+-----------------------------------
+Gives the calculated value a name so we can filter on it.
+
+
+================================================================================
+STEP-BY-STEP VISUALIZATION
+================================================================================
+
+Let's trace through your actual data:
+
+STARTING DATA (raw_shopify.orders):
+┌────────────────────┬─────────────┬───────────────────┬────────────────────┐
+│ id (order_id)      │ total_price │ financial_status  │ _daton_batch_runtime│
+├────────────────────┼─────────────┼───────────────────┼────────────────────┤
+│ 6218879934770      │ 50.00       │ pending           │ 1704067200000      │
+│ 6218879934770      │ 50.00       │ paid              │ 1705276800000      │
+│ 6218879934770      │ 50.00       │ paid              │ 1737705606000      │
+│ 6218951468338      │ 75.00       │ paid              │ 1704067200000      │
+│ 6218951468338      │ 75.00       │ paid              │ 1737705606000      │
+│ 6219023001906      │ 100.00      │ paid              │ 1737705606000      │
+└────────────────────┴─────────────┴───────────────────┴────────────────────┘
+6 rows, but only 3 unique orders!
+
+
+STEP 1: PARTITION BY order_id
+-----------------------------
+BigQuery divides the data into partitions:
+
+    Partition 1 (order_id = 6218879934770):
+    ┌────────────────────┬───────────────────┬────────────────────┐
+    │ order_id           │ financial_status  │ batch_runtime      │
+    ├────────────────────┼───────────────────┼────────────────────┤
+    │ 6218879934770      │ pending           │ 1704067200000      │
+    │ 6218879934770      │ paid              │ 1705276800000      │
+    │ 6218879934770      │ paid              │ 1737705606000      │
+    └────────────────────┴───────────────────┴────────────────────┘
+
+    Partition 2 (order_id = 6218951468338):
+    ┌────────────────────┬───────────────────┬────────────────────┐
+    │ order_id           │ financial_status  │ batch_runtime      │
+    ├────────────────────┼───────────────────┼────────────────────┤
+    │ 6218951468338      │ paid              │ 1704067200000      │
+    │ 6218951468338      │ paid              │ 1737705606000      │
+    └────────────────────┴───────────────────┴────────────────────┘
+
+    Partition 3 (order_id = 6219023001906):
+    ┌────────────────────┬───────────────────┬────────────────────┐
+    │ order_id           │ financial_status  │ batch_runtime      │
+    ├────────────────────┼───────────────────┼────────────────────┤
+    │ 6219023001906      │ paid              │ 1737705606000      │
+    └────────────────────┴───────────────────┴────────────────────┘
+
+
+STEP 2: ORDER BY batch_runtime DESC (within each partition)
+----------------------------------------------------------
+Sort each partition so the LATEST sync is first:
+
+    Partition 1 (SORTED):
+    ┌────────────────────┬───────────────────┬────────────────────┐
+    │ order_id           │ financial_status  │ batch_runtime      │
+    ├────────────────────┼───────────────────┼────────────────────┤
+    │ 6218879934770      │ paid              │ 1737705606000      │  ← Most recent
+    │ 6218879934770      │ paid              │ 1705276800000      │
+    │ 6218879934770      │ pending           │ 1704067200000      │  ← Oldest
+    └────────────────────┴───────────────────┴────────────────────┘
+
+
+STEP 3: ROW_NUMBER() assigns numbers
+------------------------------------
+Within each sorted partition, assign 1, 2, 3...
+
+    ┌────────────────────┬───────────────────┬────────────────────┬─────────┐
+    │ order_id           │ financial_status  │ batch_runtime      │ row_num │
+    ├────────────────────┼───────────────────┼────────────────────┼─────────┤
+    │ 6218879934770      │ paid              │ 1737705606000      │ 1       │ ✓
+    │ 6218879934770      │ paid              │ 1705276800000      │ 2       │
+    │ 6218879934770      │ pending           │ 1704067200000      │ 3       │
+    │ 6218951468338      │ paid              │ 1737705606000      │ 1       │ ✓
+    │ 6218951468338      │ paid              │ 1704067200000      │ 2       │
+    │ 6219023001906      │ paid              │ 1737705606000      │ 1       │ ✓
+    └────────────────────┴───────────────────┴────────────────────┴─────────┘
+
+
+STEP 4: FILTER WHERE row_num = 1
+--------------------------------
+Keep only the rows with row_num = 1:
+
+    ┌────────────────────┬───────────────────┬────────────────────┐
+    │ order_id           │ financial_status  │ batch_runtime      │
+    ├────────────────────┼───────────────────┼────────────────────┤
+    │ 6218879934770      │ paid              │ 1737705606000      │
+    │ 6218951468338      │ paid              │ 1737705606000      │
+    │ 6219023001906      │ paid              │ 1737705606000      │
+    └────────────────────┴───────────────────┴────────────────────┘
+
+    6 rows → 3 rows (1 per order_id) ✓
+
+
+================================================================================
+HANDLING TIES (TIEBREAKERS)
+================================================================================
+
+What if two rows have the SAME timestamp?
+
+    ┌──────────┬───────────────────┬────────────────────┐
+    │ order_id │ data_source       │ batch_runtime      │
+    ├──────────┼───────────────────┼────────────────────┤
+    │ 12345    │ web               │ 1737705606000      │
+    │ 12345    │ api               │ 1737705606000      │  ← Same time!
+    └──────────┴───────────────────┴────────────────────┘
+
+ROW_NUMBER() will still assign 1 and 2, but which gets 1 is ARBITRARY.
+
+Solution: Add a TIEBREAKER column to ORDER BY:
+
+    ROW_NUMBER() OVER (
+        PARTITION BY order_id
+        ORDER BY 
+            batch_runtime DESC,    -- Primary sort: latest first
+            id DESC                -- Tiebreaker: highest ID wins
+    ) AS row_num
+
+Now the assignment is DETERMINISTIC (predictable, repeatable).
+
+
+================================================================================
+COMPOSITE KEYS
+================================================================================
+
+For line items, we need to deduplicate by order_id + line_item_id:
+
+    ROW_NUMBER() OVER (
+        PARTITION BY order_id, line_item_id    -- Two columns!
+        ORDER BY order_created_at DESC
+    ) AS row_num
+
+This means:
+- Same (order_id, line_item_id) = same partition
+- Different order_id OR different line_item_id = different partition
+
+Example:
+    ┌──────────┬──────────────┬────────────────┬─────────┐
+    │ order_id │ line_item_id │ order_created  │ row_num │
+    ├──────────┼──────────────┼────────────────┼─────────┤
+    │ 12345    │ A            │ 2024-01-15     │ 1       │  ← Keep
+    │ 12345    │ A            │ 2024-01-01     │ 2       │
+    │ 12345    │ B            │ 2024-01-15     │ 1       │  ← Keep (different line_item)
+    │ 12345    │ B            │ 2024-01-01     │ 2       │
+    │ 12346    │ A            │ 2024-01-15     │ 1       │  ← Keep (different order)
+    └──────────┴──────────────┴────────────────┴─────────┘
+
+
+================================================================================
+THE CTE PATTERN IN dbt
+================================================================================
+
+In dbt, we use Common Table Expressions (CTEs) for clarity:
+
+    WITH source AS (
+        SELECT * FROM {{ source('shopify_raw', 'orders') }}
+    ),
+    
+    renamed AS (
+        SELECT
+            CAST(id AS STRING) AS order_id,
+            -- ... other columns ...
+            TIMESTAMP_MILLIS(_daton_batch_runtime) AS synced_at
+        FROM source
+    ),
+    
+    deduplicated AS (
+        SELECT
+            *,
+            ROW_NUMBER() OVER (
+                PARTITION BY order_id
+                ORDER BY synced_at DESC
+            ) AS _dedup_row_num
+        FROM renamed
+    ),
+    
+    filtered AS (
+        SELECT * EXCEPT(_dedup_row_num)  -- Remove the helper column
+        FROM deduplicated
+        WHERE _dedup_row_num = 1         -- Keep only first row per order
+    )
+    
+    SELECT * FROM filtered
+
+
+================================================================================
+PERFORMANCE CONSIDERATIONS
+================================================================================
+
+1. PARTITION BY requires shuffling data
+   - All rows with same key must be on same node
+   - Large partitions can be slow
+
+2. ORDER BY requires sorting
+   - More columns = more work
+
+3. For very large tables, consider:
+   - Materializing as TABLE instead of VIEW
+   - Using clustering in BigQuery
+
+
+NEXT FILE: 05_implementation_walkthrough.txt
+--------------------------------------------
+Line-by-line walkthrough of YOUR actual dbt models.
+

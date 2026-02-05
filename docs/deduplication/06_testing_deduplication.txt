@@ -1,0 +1,313 @@
+================================================================================
+TESTING DEDUPLICATION
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders
+================================================================================
+
+After implementing deduplication, you MUST verify it works. Here's how:
+
+
+================================================================================
+PART 1: dbt TESTS
+================================================================================
+
+We added these tests in _shopify__models.yml:
+
+
+TEST 1: unique (primary key uniqueness)
+---------------------------------------
+
+    models:
+      - name: stg_shopify__orders
+        columns:
+          - name: order_id
+            tests:
+              - unique         # ← This test
+              - not_null
+
+HOW IT WORKS:
+The 'unique' test generates this SQL:
+
+    SELECT order_id
+    FROM {{ ref('stg_shopify__orders') }}
+    GROUP BY order_id
+    HAVING COUNT(*) > 1
+
+If ANY rows are returned, the test FAILS.
+This proves we have exactly 1 row per order_id.
+
+
+TEST 2: not_null (no missing keys)
+----------------------------------
+
+    - name: order_id
+      tests:
+        - not_null        # ← This test
+
+Ensures every row has an order_id.
+Nulls can break deduplication logic.
+
+
+TEST RESULTS FROM YOUR PROJECT
+------------------------------
+
+After running 'dbt test', you saw:
+
+    Passed: unique_stg_shopify__orders_order_id
+    Passed: unique_stg_shopify__order_line_items_line_item_id
+    Passed: unique_stg_shopify__fulfillments_fulfillment_id
+    
+    20 total | 20 success ✓
+
+All uniqueness tests PASSED → deduplication is working!
+
+
+================================================================================
+PART 2: MANUAL VERIFICATION QUERIES
+================================================================================
+
+Run these queries in BigQuery to validate your deduplication:
+
+
+QUERY 1: Count raw vs deduplicated
+----------------------------------
+
+    -- Raw table (with duplicates)
+    SELECT 
+        'raw' AS table_name,
+        COUNT(*) AS total_rows,
+        COUNT(DISTINCT id) AS unique_orders
+    FROM `saras-bigquery.raw_shopify.orders`
+    
+    UNION ALL
+    
+    -- Staging table (deduplicated)
+    SELECT 
+        'staging' AS table_name,
+        COUNT(*) AS total_rows,
+        COUNT(DISTINCT order_id) AS unique_orders
+    FROM `saras-bigquery.dbt_training_staging.stg_shopify__orders`
+
+EXPECTED RESULT:
+
+    ┌────────────┬────────────┬───────────────┐
+    │ table_name │ total_rows │ unique_orders │
+    ├────────────┼────────────┼───────────────┤
+    │ raw        │ 623        │ 500           │  ← Example: duplicates exist
+    │ staging    │ 500        │ 500           │  ← Rows = unique orders!
+    └────────────┴────────────┴───────────────┘
+
+If staging total_rows ≠ unique_orders, deduplication failed!
+
+
+QUERY 2: Find orders that had duplicates
+-----------------------------------------
+
+    SELECT 
+        id AS order_id,
+        COUNT(*) AS duplicate_count
+    FROM `saras-bigquery.raw_shopify.orders`
+    GROUP BY id
+    HAVING COUNT(*) > 1
+    ORDER BY duplicate_count DESC
+    LIMIT 20
+
+This shows you which orders had the most duplicates.
+
+
+QUERY 3: Verify we kept the LATEST version
+------------------------------------------
+
+    -- For a specific order, show what we have
+    SELECT 
+        order_id,
+        payment_status,
+        fulfillment_status,
+        synced_at
+    FROM `saras-bigquery.dbt_training_staging.stg_shopify__orders`
+    WHERE order_id = '6218879934770'
+    
+    -- Compare to ALL versions in raw
+    -- (Run separately in raw dataset)
+
+This lets you manually check that we kept the correct version.
+
+
+QUERY 4: Compare aggregates before/after
+----------------------------------------
+
+    -- Revenue check
+    SELECT 
+        'raw' AS source,
+        SUM(CAST(total_price AS FLOAT64)) AS total_revenue
+    FROM `saras-bigquery.raw_shopify.orders`
+    
+    UNION ALL
+    
+    SELECT 
+        'staging' AS source,
+        SUM(total_amount) AS total_revenue
+    FROM `saras-bigquery.dbt_training_staging.stg_shopify__orders`
+
+EXPECTED:
+- Raw revenue will be HIGHER (duplicates counted multiple times)
+- Staging revenue is the TRUE revenue
+
+
+================================================================================
+PART 3: AUTOMATED DATA QUALITY CHECKS
+================================================================================
+
+Add these tests to your schema.yml for ongoing monitoring:
+
+
+TEST: Row count comparison
+--------------------------
+You can use dbt-utils package for advanced tests:
+
+    # In dbt_project.yml, add:
+    packages:
+      - package: dbt-labs/dbt_utils
+        version: 1.1.1
+
+    # In schema.yml:
+    models:
+      - name: stg_shopify__orders
+        tests:
+          - dbt_utils.equal_rowcount:
+              compare_model: ref('stg_shopify__orders')
+              # This compares row count to unique key count
+
+
+TEST: Recency check
+-------------------
+Verify we have recent data:
+
+    - name: synced_at
+      tests:
+        - dbt_utils.recency:
+            datepart: day
+            field: synced_at
+            interval: 3  # Fail if no data synced in 3 days
+
+
+================================================================================
+PART 4: DEBUGGING DEDUPLICATION FAILURES
+================================================================================
+
+If a unique test FAILS, here's how to debug:
+
+
+STEP 1: Find the duplicates
+---------------------------
+
+    SELECT 
+        order_id, 
+        COUNT(*) AS count
+    FROM {{ ref('stg_shopify__orders') }}
+    GROUP BY order_id
+    HAVING COUNT(*) > 1
+
+
+STEP 2: Examine the duplicate rows
+----------------------------------
+
+    SELECT *
+    FROM {{ ref('stg_shopify__orders') }}
+    WHERE order_id IN (
+        SELECT order_id
+        FROM {{ ref('stg_shopify__orders') }}
+        GROUP BY order_id
+        HAVING COUNT(*) > 1
+    )
+    ORDER BY order_id, synced_at DESC
+
+
+STEP 3: Check if ROW_NUMBER worked
+----------------------------------
+Temporarily add the row number to your output:
+
+    -- In your model (temporarily)
+    SELECT 
+        *,
+        ROW_NUMBER() OVER (
+            PARTITION BY order_id 
+            ORDER BY synced_at DESC
+        ) AS debug_row_num
+    FROM renamed
+
+Then check if any rows have row_num > 1.
+
+
+COMMON CAUSES OF FAILURE:
+
+1. NULL in partition key
+   - If order_id is NULL, all nulls form one partition
+   - Solution: Filter out nulls before dedup
+
+2. Sort column has ties
+   - Multiple rows with same synced_at
+   - Solution: Add tiebreaker (ORDER BY synced_at DESC, id DESC)
+
+3. Wrong CTE reference
+   - Analytics use 'renamed' instead of 'filtered'
+   - Solution: Update all downstream CTEs
+
+
+================================================================================
+PART 5: MONITORING DASHBOARD QUERY
+================================================================================
+
+Create a monitoring view to track deduplication:
+
+    CREATE OR REPLACE VIEW monitoring.dedup_stats AS
+    SELECT
+        'orders' AS entity,
+        (SELECT COUNT(*) FROM raw_shopify.orders) AS raw_rows,
+        (SELECT COUNT(*) FROM dbt_training_staging.stg_shopify__orders) AS clean_rows,
+        ROUND(100 * (1 - 
+            (SELECT COUNT(*) FROM dbt_training_staging.stg_shopify__orders) / 
+            (SELECT COUNT(*) FROM raw_shopify.orders)
+        ), 2) AS dedup_rate_pct
+    
+    UNION ALL
+    
+    SELECT
+        'line_items' AS entity,
+        -- Similar for line items...
+    
+    UNION ALL
+    
+    SELECT
+        'fulfillments' AS entity,
+        -- Similar for fulfillments...
+
+This gives you:
+    ┌──────────────┬──────────┬────────────┬───────────────┐
+    │ entity       │ raw_rows │ clean_rows │ dedup_rate_pct│
+    ├──────────────┼──────────┼────────────┼───────────────┤
+    │ orders       │ 623      │ 500        │ 19.7%         │
+    │ line_items   │ 1500     │ 1200       │ 20.0%         │
+    │ fulfillments │ 400      │ 350        │ 12.5%         │
+    └──────────────┴──────────┴────────────┴───────────────┘
+
+
+================================================================================
+SUMMARY: YOUR DEDUPLICATION IS WORKING!
+================================================================================
+
+Evidence:
+
+    ✓ unique_stg_shopify__orders_order_id         PASSED
+    ✓ unique_stg_shopify__order_line_items_line_item_id  PASSED  
+    ✓ unique_stg_shopify__fulfillments_fulfillment_id    PASSED
+
+Your staging models now have:
+- Exactly 1 row per order
+- Exactly 1 row per line item (per order)
+- Exactly 1 row per fulfillment
+- The LATEST version of each record
+
+Analytics built on these models will be ACCURATE! 🎉
+
