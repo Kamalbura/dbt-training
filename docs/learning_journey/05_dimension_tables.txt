@@ -1,0 +1,538 @@
+================================================================================
+BUILDING DIMENSION TABLES
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders
+================================================================================
+
+Dimensions describe your entities: customers, products, locations, dates.
+They provide the CONTEXT for understanding your facts.
+
+
+================================================================================
+DIMENSION TABLE DESIGN PRINCIPLES
+================================================================================
+
+1. ONE ROW PER ENTITY
+   - dim_customers: one row per customer
+   - dim_products: one row per product
+   - Primary key should be obvious
+
+2. INCLUDE DESCRIPTIVE ATTRIBUTES  
+   - Names, categories, segments
+   - Things you filter/group by
+   - NOT measures (those go in facts)
+
+3. DENORMALIZE FOR USABILITY
+   - Include related attributes
+   - Reduce JOINs needed for analysis
+   - "Wide" tables are OK for dimensions
+
+4. CONSIDER HISTORY
+   - Do attributes change over time?
+   - If yes, consider SCD (Slowly Changing Dimensions)
+
+5. MATERIALIZE AS TABLE
+   - Dimensions are joined frequently
+   - Fast lookups are important
+
+
+================================================================================
+EXAMPLE: dim_customers
+================================================================================
+
+Build a customer dimension from order history.
+
+THE SQL:
+
+-- models/marts/core/dim_customers.sql
+
+{{ config(
+    materialized='table',
+    description='Customer dimension with lifetime metrics and segmentation',
+    tags=['core', 'daily']
+) }}
+
+WITH customer_history AS (
+    -- Use our intermediate model with all customer aggregations
+    SELECT * FROM {{ ref('int_customers__order_history') }}
+),
+
+-- Get the most recent order details for each customer
+latest_orders AS (
+    SELECT 
+        customer_id,
+        customer_email,
+        order_source AS latest_order_source,
+        referring_site AS latest_referring_site
+    FROM {{ ref('stg_shopify__orders') }}
+    WHERE customer_order_sequence = customer_total_orders  -- Last order
+),
+
+-- Get first order details for acquisition tracking
+first_orders AS (
+    SELECT
+        customer_id,
+        order_source AS acquisition_source,
+        referring_site AS acquisition_referrer
+    FROM {{ ref('stg_shopify__orders') }}
+    WHERE customer_order_sequence = 1  -- First order
+),
+
+final AS (
+    SELECT
+        -- =================================================================
+        -- PRIMARY KEY
+        -- =================================================================
+        ch.customer_id,
+        
+        -- =================================================================
+        -- CONTACT INFO
+        -- =================================================================
+        lo.customer_email,
+        
+        -- =================================================================
+        -- ACQUISITION ATTRIBUTES
+        -- =================================================================
+        fo.acquisition_source,
+        fo.acquisition_referrer,
+        DATE(ch.first_order_at) AS first_order_date,
+        
+        -- =================================================================
+        -- RECENCY ATTRIBUTES
+        -- =================================================================
+        DATE(ch.most_recent_order_at) AS most_recent_order_date,
+        ch.days_since_last_order,
+        ch.days_as_customer,
+        
+        -- =================================================================
+        -- FREQUENCY ATTRIBUTES
+        -- =================================================================
+        ch.total_orders AS lifetime_order_count,
+        ch.avg_days_between_orders,
+        
+        -- =================================================================
+        -- MONETARY ATTRIBUTES
+        -- =================================================================
+        ch.lifetime_revenue AS lifetime_value,
+        ch.average_order_value,
+        ch.min_order_value,
+        ch.max_order_value,
+        ch.total_discounts_used,
+        ch.discount_usage_rate,
+        
+        -- =================================================================
+        -- BEHAVIOR FLAGS
+        -- =================================================================
+        CASE WHEN ch.orders_with_marketing_consent > 0 
+             THEN TRUE ELSE FALSE 
+        END AS has_marketing_consent,
+        
+        ch.refund_rate,
+        ch.canceled_orders AS canceled_order_count,
+        
+        -- =================================================================
+        -- SEGMENTATION
+        -- =================================================================
+        ch.frequency_segment,
+        ch.recency_segment,
+        ch.value_segment,
+        
+        -- Create combined RFM segment
+        CONCAT(
+            ch.recency_segment, '_',
+            ch.frequency_segment, '_', 
+            ch.value_segment
+        ) AS rfm_segment,
+        
+        -- Simple customer tier
+        CASE
+            WHEN ch.value_segment = 'vip' THEN 'platinum'
+            WHEN ch.value_segment = 'high_value' AND ch.frequency_segment IN ('loyal', 'champion') THEN 'gold'
+            WHEN ch.value_segment IN ('high_value', 'medium_value') THEN 'silver'
+            ELSE 'bronze'
+        END AS customer_tier,
+        
+        -- Churn risk flag
+        CASE
+            WHEN ch.recency_segment = 'churned' THEN TRUE
+            WHEN ch.recency_segment = 'at_risk' AND ch.value_segment IN ('high_value', 'vip') THEN TRUE
+            ELSE FALSE
+        END AS is_at_churn_risk,
+        
+        -- =================================================================
+        -- METADATA
+        -- =================================================================
+        CURRENT_TIMESTAMP() AS updated_at
+
+    FROM customer_history ch
+    LEFT JOIN latest_orders lo ON ch.customer_id = lo.customer_id
+    LEFT JOIN first_orders fo ON ch.customer_id = fo.customer_id
+)
+
+SELECT * FROM final
+
+
+--------------------------------------------------------------------------------
+KEY CONCEPTS IN THIS DIMENSION:
+--------------------------------------------------------------------------------
+
+1. RFM SEGMENTATION
+   RFM = Recency, Frequency, Monetary value
+   Classic customer segmentation:
+   
+   Recency: How recently did they buy?
+   Frequency: How often do they buy?
+   Monetary: How much do they spend?
+   
+   Combined: "active_loyal_high_value" = great customer!
+
+
+2. CUSTOMER TIER
+   Business-friendly segments:
+   - Platinum: VIPs
+   - Gold: High value + loyal
+   - Silver: Good customers
+   - Bronze: Everyone else
+
+
+3. CHURN RISK FLAG
+   Identifies customers likely to leave:
+   - Already churned (no orders in 180+ days)
+   - High-value but at-risk (90-180 days since order)
+
+
+================================================================================
+EXAMPLE: dim_products
+================================================================================
+
+Build a product dimension from line items.
+
+THE SQL:
+
+-- models/marts/core/dim_products.sql
+
+{{ config(
+    materialized='table',
+    description='Product dimension with sales metrics',
+    tags=['core', 'daily']
+) }}
+
+WITH line_items AS (
+    SELECT * FROM {{ ref('stg_shopify__order_line_items') }}
+),
+
+product_metrics AS (
+    SELECT
+        product_id,
+        
+        -- Get the most common values for descriptive fields
+        -- (In case they changed across orders)
+        ARRAY_AGG(product_title ORDER BY order_created_at DESC LIMIT 1)[OFFSET(0)] AS product_title,
+        ARRAY_AGG(product_name ORDER BY order_created_at DESC LIMIT 1)[OFFSET(0)] AS product_name,
+        ARRAY_AGG(product_sku ORDER BY order_created_at DESC LIMIT 1)[OFFSET(0)] AS product_sku,
+        ARRAY_AGG(product_vendor ORDER BY order_created_at DESC LIMIT 1)[OFFSET(0)] AS vendor,
+        ARRAY_AGG(variant_title ORDER BY order_created_at DESC LIMIT 1)[OFFSET(0)] AS variant_title,
+        
+        -- Counts
+        COUNT(DISTINCT order_id) AS order_count,
+        COUNT(*) AS line_item_count,
+        
+        -- Quantities
+        SUM(quantity) AS total_quantity_sold,
+        AVG(quantity) AS avg_quantity_per_order,
+        
+        -- Revenue
+        SUM(line_total_before_discount) AS total_revenue,
+        SUM(line_discount_amount) AS total_discounts,
+        AVG(unit_price) AS average_selling_price,
+        
+        -- Date metrics
+        MIN(order_created_at) AS first_sold_at,
+        MAX(order_created_at) AS last_sold_at
+
+    FROM line_items
+    WHERE product_id IS NOT NULL
+    GROUP BY product_id
+),
+
+final AS (
+    SELECT
+        -- =================================================================
+        -- PRIMARY KEY
+        -- =================================================================
+        product_id,
+        
+        -- =================================================================
+        -- DESCRIPTIVE ATTRIBUTES
+        -- =================================================================
+        product_title,
+        product_name,
+        product_sku,
+        vendor,
+        variant_title,
+        
+        -- =================================================================
+        -- SALES METRICS
+        -- =================================================================
+        order_count,
+        total_quantity_sold,
+        total_revenue,
+        total_discounts,
+        avg_quantity_per_order,
+        average_selling_price,
+        
+        -- =================================================================
+        -- CALCULATED METRICS
+        -- =================================================================
+        SAFE_DIVIDE(total_revenue, total_quantity_sold) AS revenue_per_unit,
+        SAFE_DIVIDE(total_discounts, total_revenue + total_discounts) AS discount_rate,
+        
+        -- =================================================================
+        -- DATE ATTRIBUTES
+        -- =================================================================
+        DATE(first_sold_at) AS first_sold_date,
+        DATE(last_sold_at) AS last_sold_date,
+        DATE_DIFF(CURRENT_DATE(), DATE(last_sold_at), DAY) AS days_since_last_sale,
+        
+        -- =================================================================
+        -- PRODUCT RANKINGS
+        -- =================================================================
+        RANK() OVER (ORDER BY total_revenue DESC) AS revenue_rank,
+        RANK() OVER (ORDER BY total_quantity_sold DESC) AS quantity_rank,
+        
+        -- =================================================================
+        -- PRODUCT SEGMENTS
+        -- =================================================================
+        CASE
+            WHEN RANK() OVER (ORDER BY total_revenue DESC) <= 10 THEN 'top_10'
+            WHEN RANK() OVER (ORDER BY total_revenue DESC) <= 50 THEN 'top_50'
+            WHEN RANK() OVER (ORDER BY total_revenue DESC) <= 100 THEN 'top_100'
+            ELSE 'other'
+        END AS product_tier,
+        
+        CASE
+            WHEN DATE_DIFF(CURRENT_DATE(), DATE(last_sold_at), DAY) > 90 THEN 'dormant'
+            WHEN DATE_DIFF(CURRENT_DATE(), DATE(first_sold_at), DAY) <= 30 THEN 'new'
+            ELSE 'active'
+        END AS product_status,
+        
+        -- =================================================================
+        -- METADATA
+        -- =================================================================
+        CURRENT_TIMESTAMP() AS updated_at
+
+    FROM product_metrics
+)
+
+SELECT * FROM final
+
+
+--------------------------------------------------------------------------------
+HANDLING CHANGING ATTRIBUTES:
+--------------------------------------------------------------------------------
+
+Product names might change across orders. We use ARRAY_AGG with ORDER BY
+to get the MOST RECENT value:
+
+    ARRAY_AGG(product_title ORDER BY order_created_at DESC LIMIT 1)[OFFSET(0)]
+
+This says: "Get all product titles, order by date descending (newest first),
+take only 1, and return the first element."
+
+Alternative: Use dbt SNAPSHOTS for true SCD Type 2 tracking.
+
+
+================================================================================
+EXAMPLE: dim_dates (Date Dimension)
+================================================================================
+
+A date dimension is pre-generated and contains all dates.
+
+THE SQL:
+
+-- models/marts/core/dim_dates.sql
+
+{{ config(
+    materialized='table',
+    description='Date dimension for time-based analysis',
+    tags=['core']
+) }}
+
+WITH date_spine AS (
+    -- Generate dates for 10 years (adjust as needed)
+    SELECT date
+    FROM UNNEST(
+        GENERATE_DATE_ARRAY('2020-01-01', '2030-12-31')
+    ) AS date
+),
+
+final AS (
+    SELECT
+        -- =================================================================
+        -- PRIMARY KEY OPTIONS
+        -- =================================================================
+        date AS date_day,
+        FORMAT_DATE('%Y%m%d', date) AS date_key,  -- YYYYMMDD integer-like
+        
+        -- =================================================================
+        -- DATE PARTS
+        -- =================================================================
+        EXTRACT(YEAR FROM date) AS year,
+        EXTRACT(QUARTER FROM date) AS quarter,
+        EXTRACT(MONTH FROM date) AS month,
+        EXTRACT(WEEK FROM date) AS week_of_year,
+        EXTRACT(DAY FROM date) AS day_of_month,
+        EXTRACT(DAYOFWEEK FROM date) AS day_of_week,  -- 1=Sunday, 7=Saturday
+        EXTRACT(DAYOFYEAR FROM date) AS day_of_year,
+        
+        -- =================================================================
+        -- FORMATTED STRINGS
+        -- =================================================================
+        FORMAT_DATE('%B', date) AS month_name,      -- "January"
+        FORMAT_DATE('%b', date) AS month_short,     -- "Jan"
+        FORMAT_DATE('%A', date) AS day_name,        -- "Monday"
+        FORMAT_DATE('%a', date) AS day_short,       -- "Mon"
+        FORMAT_DATE('%Y-%m', date) AS year_month,   -- "2024-01"
+        FORMAT_DATE('%Y-Q%Q', date) AS year_quarter,-- "2024-Q1"
+        
+        -- =================================================================
+        -- FISCAL CALENDAR (adjust for your fiscal year)
+        -- =================================================================
+        -- Assuming fiscal year starts in February
+        CASE 
+            WHEN EXTRACT(MONTH FROM date) >= 2 
+            THEN EXTRACT(YEAR FROM date)
+            ELSE EXTRACT(YEAR FROM date) - 1
+        END AS fiscal_year,
+        
+        -- =================================================================
+        -- FLAGS
+        -- =================================================================
+        CASE 
+            WHEN EXTRACT(DAYOFWEEK FROM date) IN (1, 7) 
+            THEN TRUE ELSE FALSE 
+        END AS is_weekend,
+        
+        -- Add holidays (simplified example)
+        CASE
+            WHEN FORMAT_DATE('%m-%d', date) = '01-01' THEN TRUE  -- New Year
+            WHEN FORMAT_DATE('%m-%d', date) = '07-04' THEN TRUE  -- July 4
+            WHEN FORMAT_DATE('%m-%d', date) = '12-25' THEN TRUE  -- Christmas
+            ELSE FALSE
+        END AS is_holiday,
+        
+        -- =================================================================
+        -- RELATIVE FLAGS
+        -- =================================================================
+        date = CURRENT_DATE() AS is_today,
+        date = DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY) AS is_yesterday,
+        date >= DATE_TRUNC(CURRENT_DATE(), MONTH) AS is_current_month,
+        date >= DATE_TRUNC(CURRENT_DATE(), YEAR) AS is_current_year
+
+    FROM date_spine
+)
+
+SELECT * FROM final
+
+
+--------------------------------------------------------------------------------
+WHY A DATE DIMENSION?
+--------------------------------------------------------------------------------
+
+Without dim_dates:
+    SELECT EXTRACT(MONTH FROM order_date), SUM(amount)
+    FROM fct_orders
+    GROUP BY 1
+    
+    Result: Only shows months with orders!
+
+With dim_dates:
+    SELECT d.month_name, COALESCE(SUM(f.amount), 0)
+    FROM dim_dates d
+    LEFT JOIN fct_orders f ON d.date_day = f.order_date
+    GROUP BY d.month_name
+    
+    Result: Shows ALL months, even with zero orders!
+
+
+================================================================================
+YAML DOCUMENTATION
+================================================================================
+
+Add to: models/marts/core/_core__models.yml
+
+  - name: dim_customers
+    description: >
+      Customer dimension with RFM segmentation, tiers, and lifetime metrics.
+      One row per customer.
+    columns:
+      - name: customer_id
+        description: Unique customer identifier (primary key)
+        tests:
+          - unique
+          - not_null
+      
+      - name: customer_tier
+        description: Customer value tier (platinum/gold/silver/bronze)
+        tests:
+          - accepted_values:
+              values: ['platinum', 'gold', 'silver', 'bronze']
+      
+      - name: frequency_segment
+        tests:
+          - accepted_values:
+              values: ['one_time', 'developing', 'loyal', 'champion']
+
+  - name: dim_products
+    description: >
+      Product dimension with sales metrics and rankings.
+      One row per product.
+    columns:
+      - name: product_id
+        description: Unique product identifier (primary key)
+        tests:
+          - unique
+          - not_null
+
+  - name: dim_dates
+    description: >
+      Date dimension with calendar attributes.
+      One row per day from 2020-2030.
+    columns:
+      - name: date_day
+        description: The date (primary key)
+        tests:
+          - unique
+          - not_null
+
+
+================================================================================
+BEST PRACTICES SUMMARY
+================================================================================
+
+1. DIMENSION vs FACT?
+   If it's a NOUN you GROUP BY → dimension (customers, products)
+   If it's a VERB you SUM → fact (orders, payments)
+
+2. INCLUDE SURROGATE KEYS
+   Natural keys can change; surrogate keys don't
+
+3. ADD BUSINESS-FRIENDLY NAMES
+   Segments, tiers, categories that analysts understand
+
+4. INCLUDE DERIVED ATTRIBUTES
+   Rankings, flags, calculated segments
+
+5. HANDLE NULL GRACEFULLY
+   "Unknown" customer, "Uncategorized" product
+
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+Now let's understand the ref() function and dependencies.
+
+NEXT FILE: 06_ref_function.txt
+

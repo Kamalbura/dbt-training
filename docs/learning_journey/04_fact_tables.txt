@@ -1,0 +1,449 @@
+================================================================================
+BUILDING FACT TABLES
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders
+================================================================================
+
+Fact tables are the STAR of your analytics. They contain the metrics
+everyone cares about: revenue, orders, quantities, conversions.
+
+
+================================================================================
+FACT TABLE DESIGN PRINCIPLES
+================================================================================
+
+1. DEFINE THE GRAIN FIRST
+   What does one row represent?
+   - fct_orders: one row per ORDER
+   - fct_order_line_items: one row per LINE ITEM
+
+2. INCLUDE FOREIGN KEYS TO DIMENSIONS
+   - customer_id → dim_customers
+   - product_id → dim_products
+   - order_date → dim_dates
+
+3. INCLUDE MEASURES (NUMERIC FACTS)
+   - Additive: amounts, quantities, counts
+   - Derived: calculated metrics
+
+4. AVOID DESCRIPTIVE ATTRIBUTES
+   - Customer name → belongs in dim_customers
+   - Product category → belongs in dim_products
+
+5. MATERIALIZE AS TABLE
+   - Facts are queried frequently
+   - Table materialization = faster queries
+
+
+================================================================================
+EXAMPLE: fct_orders
+================================================================================
+
+Let's build the main orders fact table.
+
+
+THE SQL:
+
+-- models/marts/core/fct_orders.sql
+
+{{ config(
+    materialized='table',
+    description='Order-level fact table with key metrics for analytics',
+    tags=['core', 'daily']
+) }}
+
+WITH enriched_orders AS (
+    -- Start from our intermediate model that has everything
+    SELECT * FROM {{ ref('int_orders__enriched') }}
+),
+
+final AS (
+    SELECT
+        -- =================================================================
+        -- PRIMARY KEY
+        -- =================================================================
+        order_id,
+        
+        -- =================================================================
+        -- FOREIGN KEYS (for joining to dimensions)
+        -- =================================================================
+        customer_id,
+        DATE(order_created_at) AS order_date,
+        
+        -- =================================================================
+        -- DATE/TIME ATTRIBUTES (often useful to denormalize)
+        -- =================================================================
+        order_created_at,
+        EXTRACT(YEAR FROM order_created_at) AS order_year,
+        EXTRACT(MONTH FROM order_created_at) AS order_month,
+        EXTRACT(DAYOFWEEK FROM order_created_at) AS order_day_of_week,
+        EXTRACT(HOUR FROM order_created_at) AS order_hour,
+        
+        -- =================================================================
+        -- ORDER IDENTIFIERS
+        -- =================================================================
+        order_name,
+        order_number,
+        
+        -- =================================================================
+        -- FINANCIAL MEASURES (the key metrics!)
+        -- =================================================================
+        -- Gross revenue before any deductions
+        subtotal_amount,
+        
+        -- Deductions
+        discount_amount,
+        
+        -- Additions
+        tax_amount,
+        tip_amount,
+        
+        -- Net revenue (what customer paid)
+        total_amount,
+        
+        -- Line items total (for verification)
+        line_items_total,
+        
+        -- Calculated rate
+        discount_rate,
+        
+        -- =================================================================
+        -- QUANTITY MEASURES
+        -- =================================================================
+        line_item_count,
+        total_quantity,
+        
+        -- =================================================================
+        -- FULFILLMENT MEASURES
+        -- =================================================================
+        fulfillment_count,
+        hours_to_first_fulfillment,
+        
+        -- =================================================================
+        -- STATUS DIMENSIONS (semi-additive)
+        -- =================================================================
+        payment_status,
+        fulfillment_status,
+        is_canceled,
+        is_fully_delivered,
+        
+        -- =================================================================
+        -- CUSTOMER CONTEXT (denormalized for convenience)
+        -- =================================================================
+        is_first_order,
+        customer_order_sequence,
+        customer_lifetime_value,
+        customer_total_orders,
+        
+        -- =================================================================
+        -- SOURCE TRACKING
+        -- =================================================================
+        order_source,
+        referring_site,
+        
+        -- =================================================================
+        -- DERIVED DIMENSIONS
+        -- =================================================================
+        order_size_bucket,
+        
+        -- =================================================================
+        -- FLAGS
+        -- =================================================================
+        accepts_marketing
+
+    FROM enriched_orders
+    
+    -- Exclude canceled orders from core metrics (optional)
+    -- WHERE is_canceled = FALSE
+)
+
+SELECT * FROM final
+
+
+--------------------------------------------------------------------------------
+DESIGN DECISIONS EXPLAINED:
+--------------------------------------------------------------------------------
+
+1. WHY MATERIALIZE AS TABLE?
+   
+   {{ config(materialized='table') }}
+   
+   - Fact tables are queried constantly
+   - Dashboards hit them every refresh
+   - Table = data is stored, queries are fast
+   - View = recomputes every time (slow)
+
+
+2. WHY DENORMALIZE SOME DIMENSIONS?
+   
+   EXTRACT(YEAR FROM order_created_at) AS order_year
+   
+   - Common analytics patterns need year/month
+   - Saves a JOIN to dim_dates for simple queries
+   - Tradeoff: slight data duplication
+   
+   is_first_order, customer_order_sequence
+   
+   - Already computed in staging
+   - Avoids JOIN to dim_customers for common queries
+   - "Is this a new customer?" is asked constantly
+
+
+3. WHY INCLUDE BOTH RAW AND DERIVED?
+   
+   subtotal_amount    (raw from source)
+   discount_rate      (calculated: discount/subtotal)
+   
+   - Raw values allow custom calculations
+   - Derived values standardize common metrics
+   - Both are useful
+
+
+================================================================================
+EXAMPLE: fct_daily_revenue
+================================================================================
+
+An aggregated fact table for high-level dashboards.
+
+
+THE SQL:
+
+-- models/marts/core/fct_daily_revenue.sql
+
+{{ config(
+    materialized='table',
+    description='Daily revenue summary for executive dashboards',
+    tags=['core', 'daily']
+) }}
+
+WITH orders AS (
+    SELECT * FROM {{ ref('fct_orders') }}
+),
+
+daily_aggregation AS (
+    SELECT
+        -- =================================================================
+        -- DATE GRAIN
+        -- =================================================================
+        order_date,
+        order_year,
+        order_month,
+        EXTRACT(DAYOFWEEK FROM order_date) AS day_of_week,
+        
+        -- =================================================================
+        -- ORDER COUNTS
+        -- =================================================================
+        COUNT(*) AS order_count,
+        COUNTIF(is_first_order) AS new_customer_orders,
+        COUNTIF(NOT is_first_order) AS returning_customer_orders,
+        COUNTIF(is_canceled) AS canceled_order_count,
+        
+        -- =================================================================
+        -- REVENUE METRICS
+        -- =================================================================
+        SUM(total_amount) AS total_revenue,
+        SUM(subtotal_amount) AS gross_revenue,
+        SUM(discount_amount) AS total_discounts,
+        SUM(tax_amount) AS total_tax,
+        SUM(tip_amount) AS total_tips,
+        
+        -- =================================================================
+        -- AVERAGES
+        -- =================================================================
+        AVG(total_amount) AS average_order_value,
+        AVG(line_item_count) AS avg_items_per_order,
+        AVG(total_quantity) AS avg_units_per_order,
+        
+        -- =================================================================
+        -- FULFILLMENT METRICS
+        -- =================================================================
+        AVG(hours_to_first_fulfillment) AS avg_hours_to_fulfill,
+        COUNTIF(is_fully_delivered) AS fully_delivered_count,
+        
+        -- =================================================================
+        -- SOURCE BREAKDOWN
+        -- =================================================================
+        COUNTIF(order_source = 'web') AS web_orders,
+        COUNTIF(order_source = 'TikTok') AS tiktok_orders,
+        
+        -- =================================================================
+        -- CUSTOMER METRICS
+        -- =================================================================
+        COUNT(DISTINCT customer_id) AS unique_customers
+
+    FROM orders
+    WHERE is_canceled = FALSE  -- Exclude canceled for revenue metrics
+    GROUP BY order_date, order_year, order_month
+)
+
+SELECT 
+    *,
+    
+    -- =================================================================
+    -- ADDITIONAL DERIVED METRICS
+    -- =================================================================
+    
+    -- Revenue per customer (basket size proxy)
+    SAFE_DIVIDE(total_revenue, unique_customers) AS revenue_per_customer,
+    
+    -- New customer percentage
+    SAFE_DIVIDE(new_customer_orders, order_count) AS new_customer_rate,
+    
+    -- Discount percentage
+    SAFE_DIVIDE(total_discounts, gross_revenue) AS discount_rate
+
+FROM daily_aggregation
+ORDER BY order_date DESC
+
+
+--------------------------------------------------------------------------------
+USE CASES FOR AGGREGATED FACTS:
+--------------------------------------------------------------------------------
+
+1. EXECUTIVE DASHBOARDS
+   "What was revenue yesterday?" 
+   → Single row lookup, instant!
+
+2. TREND ANALYSIS
+   "Revenue by month for the past year"
+   → 12 rows instead of thousands of orders
+
+3. PERFORMANCE COMPARISONS
+   "This week vs last week"
+   → Quick date filtering
+
+4. ANOMALY DETECTION
+   "Any days with unusually low revenue?"
+   → Easy to spot outliers
+
+
+================================================================================
+YAML DOCUMENTATION
+================================================================================
+
+Create: models/marts/core/_core__models.yml
+
+version: 2
+
+models:
+  - name: fct_orders
+    description: >
+      Order-level fact table containing all completed orders with financial 
+      metrics. One row per order. This is the primary table for order analysis.
+    
+    meta:
+      owner: analytics_engineering
+      tier: gold
+      pii: false
+    
+    columns:
+      - name: order_id
+        description: Unique identifier for the order (primary key)
+        tests:
+          - unique
+          - not_null
+      
+      - name: customer_id
+        description: Foreign key to dim_customers
+        tests:
+          - not_null
+          - relationships:
+              to: ref('dim_customers')
+              field: customer_id
+      
+      - name: total_amount
+        description: Total amount paid by customer (after discounts, with tax)
+        tests:
+          - not_null
+      
+      - name: order_date
+        description: Date the order was placed
+        tests:
+          - not_null
+      
+      - name: payment_status
+        description: Current payment status
+        tests:
+          - accepted_values:
+              values: ['paid', 'pending', 'refunded', 'voided', 'partially_refunded']
+
+  - name: fct_daily_revenue
+    description: >
+      Daily aggregated revenue metrics. One row per day. 
+      Used for executive dashboards and trend analysis.
+    
+    columns:
+      - name: order_date
+        description: The date (primary key)
+        tests:
+          - unique
+          - not_null
+      
+      - name: total_revenue
+        description: Sum of all order amounts for the day
+
+
+================================================================================
+TESTING FACT TABLES
+================================================================================
+
+ESSENTIAL TESTS:
+
+1. Primary key uniqueness
+   - one row per order_id
+
+2. Not null on critical fields
+   - order_id, customer_id, total_amount, order_date
+
+3. Relationships to dimensions
+   - every customer_id exists in dim_customers
+
+4. Accepted values for statuses
+   - payment_status in ['paid', 'pending', ...]
+
+5. Data quality assertions
+   - total_amount >= 0
+   - discount_amount <= subtotal_amount
+
+
+CUSTOM TEST EXAMPLE:
+
+-- tests/assert_revenue_positive.sql
+SELECT order_id
+FROM {{ ref('fct_orders') }}
+WHERE total_amount < 0
+
+
+================================================================================
+BEST PRACTICES
+================================================================================
+
+1. ALWAYS DEFINE GRAIN
+   Document: "One row per ORDER"
+
+2. INCLUDE METADATA
+   Add: created_at, updated_at, source columns
+
+3. USE CONSISTENT NAMING
+   - Measures: total_amount, order_count
+   - Flags: is_first_order, is_canceled
+   - Foreign keys: customer_id, product_id
+
+4. DENORMALIZE JUDICIOUSLY
+   - Common query patterns → denormalize
+   - Rarely used attributes → leave in dimensions
+
+5. CREATE AGGREGATED FACTS
+   - Daily/weekly/monthly summaries
+   - Faster for dashboards
+
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+Now let's build the dimension tables that complement our facts.
+
+NEXT FILE: 05_dimension_tables.txt
+

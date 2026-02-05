@@ -1,0 +1,349 @@
+================================================================================
+THE ref() FUNCTION AND DEPENDENCIES
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders
+================================================================================
+
+The ref() function is the HEART of dbt. It connects your models into a
+coherent pipeline and enables all of dbt's powerful features.
+
+
+================================================================================
+WHAT IS ref()?
+================================================================================
+
+ref() is a Jinja function that references another dbt model.
+
+    SELECT * FROM {{ ref('stg_shopify__orders') }}
+
+At compile time, dbt replaces this with the actual table name:
+
+    SELECT * FROM `saras-bigquery`.`dbt_training_staging`.`stg_shopify__orders`
+
+
+================================================================================
+WHY ref() MATTERS
+================================================================================
+
+ref() does THREE critical things:
+
+1. RESOLVES TABLE NAMES
+   - Handles different environments (dev, staging, prod)
+   - You write ref('model_name') everywhere
+   - dbt figures out the actual table
+
+2. BUILDS THE DAG (Dependency Graph)
+   - dbt knows model A depends on model B
+   - Builds B before A automatically
+   - Enables parallel execution where possible
+
+3. ENABLES DOCUMENTATION
+   - dbt docs show lineage
+   - You can trace data from source to mart
+   - "Where does this column come from?"
+
+
+================================================================================
+THE DAG VISUALIZATION
+================================================================================
+
+Your project's dependency graph:
+
+    SOURCES                STAGING              INTERMEDIATE           MARTS
+    
+    ┌─────────────┐
+    │ raw_shopify │
+    │   orders    │
+    └──────┬──────┘
+           │
+           ├───────────────────────────────────────────────────────────────┐
+           │                                                               │
+           ▼                                                               │
+    ┌──────────────────────┐                                              │
+    │ stg_shopify__orders  │──────────┬───────────────────────────────────┤
+    └──────────────────────┘          │                                   │
+           │                          │                                   │
+           │                          ▼                                   │
+           │               ┌─────────────────────────┐                    │
+           │               │ int_orders__enriched    │────────────────┐   │
+           │               └─────────────────────────┘                │   │
+           │                          │                               │   │
+           ▼                          │                               ▼   ▼
+    ┌──────────────────────────────┐  │                        ┌────────────┐
+    │ stg_shopify__order_line_items │──┤                        │ fct_orders │
+    └──────────────────────────────┘  │                        └────────────┘
+           │                          │                               │
+           │                          ▼                               │
+           │            ┌──────────────────────────────┐              │
+           │            │ int_customers__order_history │              │
+           │            └──────────────────────────────┘              │
+           │                          │                               │
+           ▼                          ▼                               ▼
+    ┌──────────────────────────┐   ┌─────────────────┐    ┌──────────────────┐
+    │ stg_shopify__fulfillments │   │ dim_customers   │    │ fct_daily_revenue│
+    └──────────────────────────┘   └─────────────────┘    └──────────────────┘
+                                                                      │
+                                           ┌──────────────────────────┘
+                                           ▼
+                                   ┌──────────────┐
+                                   │ dim_products │
+                                   └──────────────┘
+
+Each arrow = a ref() relationship
+dbt builds from left to right, respecting dependencies!
+
+
+================================================================================
+BUILD ORDER
+================================================================================
+
+When you run `dbt run`, dbt executes in dependency order:
+
+STEP 1: Staging models (no upstream references)
+    └── stg_shopify__orders
+    └── stg_shopify__order_line_items  
+    └── stg_shopify__fulfillments
+    (Can run in PARALLEL - no dependencies between them)
+
+STEP 2: Intermediate models (ref staging)
+    └── int_orders__enriched        (refs stg_orders, stg_line_items, stg_fulfillments)
+    └── int_customers__order_history (refs stg_orders)
+
+STEP 3: Marts (ref intermediate and staging)
+    └── fct_orders          (refs int_orders__enriched)
+    └── dim_customers       (refs int_customers__order_history, stg_orders)
+    └── dim_products        (refs stg_line_items)
+
+STEP 4: Aggregated marts (ref other marts)
+    └── fct_daily_revenue   (refs fct_orders)
+
+
+================================================================================
+CORRECT ref() USAGE
+================================================================================
+
+ALWAYS use ref() for dbt models:
+
+    ✓ CORRECT:
+    SELECT * FROM {{ ref('stg_shopify__orders') }}
+    
+    ✗ WRONG:  
+    SELECT * FROM `project.dataset.stg_shopify__orders`
+
+
+ALWAYS use source() for raw tables:
+
+    ✓ CORRECT:
+    SELECT * FROM {{ source('shopify_raw', 'orders') }}
+    
+    ✗ WRONG:
+    SELECT * FROM `project.raw_shopify.orders`
+
+
+================================================================================
+MULTIPLE REFERENCES IN ONE MODEL
+================================================================================
+
+You can ref() multiple models in one query:
+
+    WITH orders AS (
+        SELECT * FROM {{ ref('stg_shopify__orders') }}
+    ),
+    
+    line_items AS (
+        SELECT * FROM {{ ref('stg_shopify__order_line_items') }}
+    ),
+    
+    fulfillments AS (
+        SELECT * FROM {{ ref('stg_shopify__fulfillments') }}
+    )
+    
+    SELECT 
+        o.*,
+        l.product_count,
+        f.shipped
+    FROM orders o
+    LEFT JOIN line_items l ON o.order_id = l.order_id
+    LEFT JOIN fulfillments f ON o.order_id = f.order_id
+
+dbt will ensure ALL three staging models are built before this one runs.
+
+
+================================================================================
+ENVIRONMENTS AND ref()
+================================================================================
+
+ref() resolves differently in each environment:
+
+DEVELOPMENT (your dbt run):
+    {{ ref('stg_shopify__orders') }}
+    → `saras-bigquery`.`dbt_training_staging`.`stg_shopify__orders`
+
+PRODUCTION (scheduled job):
+    {{ ref('stg_shopify__orders') }}
+    → `saras-bigquery`.`prod_staging`.`stg_shopify__orders`
+
+Same code, different output based on target (profiles.yml)!
+
+
+================================================================================
+SELECTING MODELS TO RUN
+================================================================================
+
+Use the --select (-s) flag with ref-like syntax:
+
+RUN ONE MODEL:
+    dbt run --select stg_shopify__orders
+
+RUN MODEL AND ALL DOWNSTREAM (dependents):
+    dbt run --select stg_shopify__orders+
+    
+    This runs:
+    └── stg_shopify__orders
+    └── int_orders__enriched
+    └── fct_orders
+    └── fct_daily_revenue
+
+RUN MODEL AND ALL UPSTREAM (dependencies):
+    dbt run --select +fct_orders
+    
+    This runs:
+    └── stg_shopify__orders
+    └── stg_shopify__order_line_items
+    └── stg_shopify__fulfillments
+    └── int_orders__enriched
+    └── fct_orders
+
+RUN A FOLDER:
+    dbt run --select models/staging/shopify/
+
+RUN BY TAG:
+    dbt run --select tag:daily
+
+RUN BY MATERIALIZATION:
+    dbt run --select config.materialized:table
+
+
+================================================================================
+CIRCULAR DEPENDENCIES
+================================================================================
+
+PROBLEM: Circular dependencies are IMPOSSIBLE.
+
+Model A refs Model B
+Model B refs Model A
+→ dbt cannot determine build order!
+
+    ┌─────────┐
+    │ Model A │
+    └────┬────┘
+         │ refs
+         ▼
+    ┌─────────┐
+    │ Model B │
+    └────┬────┘
+         │ refs
+         ▼
+    ┌─────────┐
+    │ Model A │ ← ERROR: Circular!
+    └─────────┘
+
+
+SOLUTION: Refactor to break the cycle.
+
+Usually means:
+1. Create a shared intermediate model
+2. Move logic to a different layer
+3. Rethink the data model
+
+
+================================================================================
+DEBUGGING DEPENDENCIES
+================================================================================
+
+COMMAND: See what will be run
+    dbt ls --select +fct_orders
+    
+    Lists all upstream dependencies
+
+COMMAND: See dependency graph
+    dbt docs generate
+    dbt docs serve
+    
+    Open browser and click "View Lineage"
+
+
+DEBUG: Check compiled SQL
+    Look in:
+    target/compiled/{project_name}/models/.../model.sql
+    
+    This shows exact table names after ref() resolution
+
+
+================================================================================
+ADVANCED: version= PARAMETER
+================================================================================
+
+For versioned models (dbt 1.6+):
+
+    SELECT * FROM {{ ref('dim_customers', version=1) }}
+
+Useful when:
+- Publishing models as APIs
+- Maintaining backward compatibility
+- Multiple versions of same model
+
+
+================================================================================
+THE source() FUNCTION
+================================================================================
+
+Similar to ref() but for RAW TABLES not managed by dbt:
+
+    SELECT * FROM {{ source('shopify_raw', 'orders') }}
+
+Defined in _shopify__sources.yml:
+
+    sources:
+      - name: shopify_raw
+        database: saras-bigquery
+        schema: raw_shopify
+        tables:
+          - name: orders
+
+
+KEY DIFFERENCE:
+- ref() → dbt models (managed by dbt)
+- source() → external tables (not managed by dbt)
+
+
+================================================================================
+SUMMARY
+================================================================================
+
+1. ALWAYS USE ref() FOR MODELS
+   Never hardcode table names
+
+2. UNDERSTAND THE DAG
+   Models build in dependency order
+
+3. USE SELECTORS WISELY
+   --select model+  →  downstream
+   --select +model  →  upstream
+
+4. AVOID CIRCULAR DEPENDENCIES
+   Refactor if needed
+
+5. DEBUG WITH dbt ls AND docs
+   Understand what will run
+
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+Now let's learn advanced testing strategies.
+
+NEXT FILE: 07_advanced_testing.txt
+

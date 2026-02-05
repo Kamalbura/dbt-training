@@ -1,0 +1,184 @@
+================================================================================
+YOUR dbt LEARNING ROADMAP
+================================================================================
+Author: dbt Training Course
+================================================================================
+
+This document maps your complete learning journey from raw data to production.
+
+
+================================================================================
+WHERE YOU ARE NOW
+================================================================================
+
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                        YOUR dbt LEARNING PATH                          │
+    ├─────────────────────────────────────────────────────────────────────────┤
+    │                                                                         │
+    │  PHASE 1: FOUNDATIONS (COMPLETED ✓)                                    │
+    │  ├── [✓] Understanding raw data (JSONL structure)                      │
+    │  ├── [✓] Loading data to BigQuery                                      │
+    │  ├── [✓] dbt project setup                                             │
+    │  ├── [✓] Sources configuration                                         │
+    │  ├── [✓] Staging models (renaming, casting)                            │
+    │  ├── [✓] UNNEST for nested arrays                                      │
+    │  ├── [✓] Window functions (ROW_NUMBER, LAG, SUM OVER)                  │
+    │  ├── [✓] Deduplication with ROW_NUMBER                                 │
+    │  └── [✓] Basic testing (unique, not_null)                              │
+    │                                                                         │
+    │  PHASE 2: INTERMEDIATE (YOU ARE HERE →)                                │
+    │  ├── [ ] dbt Layer Architecture                                        │
+    │  ├── [ ] Intermediate models                                           │
+    │  ├── [ ] Fact tables                                                   │
+    │  ├── [ ] Dimension tables                                              │
+    │  ├── [ ] Metrics and aggregations                                      │
+    │  ├── [ ] Ref() and dependencies                                        │
+    │  └── [ ] Advanced testing                                              │
+    │                                                                         │
+    │  PHASE 3: ADVANCED                                                     │
+    │  ├── [ ] Incremental models                                            │
+    │  ├── [ ] Macros (reusable SQL)                                         │
+    │  ├── [ ] Jinja templating                                              │
+    │  ├── [ ] dbt packages                                                  │
+    │  ├── [ ] Custom tests                                                  │
+    │  └── [ ] Snapshots (SCD Type 2)                                        │
+    │                                                                         │
+    │  PHASE 4: PRODUCTION                                                   │
+    │  ├── [ ] Documentation (dbt docs)                                      │
+    │  ├── [ ] Deployment & CI/CD                                            │
+    │  ├── [ ] Scheduling                                                    │
+    │  └── [ ] Monitoring & Alerting                                         │
+    │                                                                         │
+    └─────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+PHASE 2: WHAT YOU'LL LEARN NOW
+================================================================================
+
+LESSON 1: dbt Layer Architecture
+--------------------------------
+File: 01_dbt_layer_architecture.txt
+
+Why organize models into layers? You'll learn:
+- Staging layer (you've done this!)
+- Intermediate layer (business logic)  
+- Marts layer (final analytics tables)
+- How data flows between layers
+
+
+LESSON 2: Dimensional Modeling
+------------------------------
+File: 02_dimensional_modeling.txt
+
+The star schema pattern:
+- What are FACT tables? (events, transactions)
+- What are DIMENSION tables? (entities, attributes)
+- Why this matters for analytics
+- How it applies to your Shopify data
+
+
+LESSON 3: Building Intermediate Models
+--------------------------------------
+File: 03_intermediate_models.txt
+
+Reusable building blocks:
+- When to create intermediate models
+- Joining staging tables
+- Business logic transformations
+- Real example with your data
+
+
+LESSON 4: Building Fact Tables
+------------------------------
+File: 04_fact_tables.txt
+
+Your first mart:
+- fct_orders (grain: one row per order)
+- Key metrics: revenue, quantities, discounts
+- Joining dimensions
+- Implementation walkthrough
+
+
+LESSON 5: Building Dimension Tables
+-----------------------------------
+File: 05_dimension_tables.txt
+
+Entity reference tables:
+- dim_customers
+- dim_products
+- Slowly Changing Dimensions (SCD)
+- Implementation walkthrough
+
+
+LESSON 6: The ref() Function Deep Dive
+--------------------------------------
+File: 06_ref_function.txt
+
+Model dependencies:
+- How dbt builds the DAG
+- Proper use of ref()
+- Avoiding circular dependencies
+- Debugging dependency issues
+
+
+LESSON 7: Advanced Testing
+--------------------------
+File: 07_advanced_testing.txt
+
+Beyond unique and not_null:
+- Relationship tests
+- Accepted values
+- Custom SQL tests
+- dbt-expectations package
+
+
+================================================================================
+FILES IN THIS LEARNING MODULE
+================================================================================
+
+    docs/learning_journey/
+    ├── 00_learning_roadmap.txt          ← You are here
+    ├── 01_dbt_layer_architecture.txt
+    ├── 02_dimensional_modeling.txt
+    ├── 03_intermediate_models.txt
+    ├── 04_fact_tables.txt
+    ├── 05_dimension_tables.txt
+    ├── 06_ref_function.txt
+    └── 07_advanced_testing.txt
+
+
+================================================================================
+HANDS-ON: WHAT WE'LL BUILD
+================================================================================
+
+By the end of Phase 2, your project will have:
+
+    models/
+    ├── staging/
+    │   └── shopify/
+    │       ├── stg_shopify__orders.sql             ✓ Done
+    │       ├── stg_shopify__order_line_items.sql   ✓ Done
+    │       └── stg_shopify__fulfillments.sql       ✓ Done
+    │
+    ├── intermediate/
+    │   └── shopify/
+    │       ├── int_orders__enriched.sql            ← NEW
+    │       └── int_customers__order_history.sql    ← NEW
+    │
+    └── marts/
+        └── core/
+            ├── fct_orders.sql                      ← NEW
+            ├── fct_daily_revenue.sql               ← NEW
+            ├── dim_customers.sql                   ← NEW
+            └── dim_products.sql                    ← NEW
+
+
+================================================================================
+LET'S BEGIN!
+================================================================================
+
+Start with: 01_dbt_layer_architecture.txt
+
+This is the foundation for everything else in Phase 2.
+

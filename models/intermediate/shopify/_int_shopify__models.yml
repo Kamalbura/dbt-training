@@ -1,0 +1,66 @@
+version: 2
+
+models:
+  - name: int_orders__enriched
+    description: |
+      Orders enriched with line item aggregates and fulfillment metrics.
+      This model joins staging tables and adds calculated fields.
+      
+      **Grain:** One row per order
+    
+    columns:
+      - name: order_id
+        description: Primary key - unique order identifier
+        tests:
+          - unique
+          - not_null
+      
+      - name: customer_id
+        description: Foreign key to customer
+        tests:
+          - not_null
+      
+      - name: line_item_count
+        description: Number of distinct products in the order
+      
+      - name: order_size_bucket
+        description: Order categorization (small/medium/large/enterprise)
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['small', 'medium', 'large', 'enterprise']
+
+  - name: int_customers__order_history
+    description: |
+      Customer-level aggregations and segmentation from order history.
+      Provides RFM (Recency, Frequency, Monetary) analysis.
+      
+      **Grain:** One row per customer
+    
+    columns:
+      - name: customer_id
+        description: Primary key - unique customer identifier
+        tests:
+          - unique
+          - not_null
+      
+      - name: frequency_segment
+        description: Customer frequency tier
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['one_time', 'developing', 'loyal', 'champion']
+      
+      - name: recency_segment
+        description: Customer recency tier
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['active', 'cooling', 'at_risk', 'churned']
+      
+      - name: value_segment
+        description: Customer value tier
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['low_value', 'medium_value', 'high_value', 'vip']

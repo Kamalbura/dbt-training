@@ -1,0 +1,298 @@
+================================================================================
+dbt LAYER ARCHITECTURE
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders
+================================================================================
+
+dbt projects are organized into LAYERS. Each layer has a specific purpose.
+Think of it like a factory assembly line - each station does one job well.
+
+
+================================================================================
+THE THREE-LAYER ARCHITECTURE
+================================================================================
+
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                                                                         │
+    │   RAW DATA          STAGING           INTERMEDIATE         MARTS       │
+    │   (BigQuery)        (Clean)           (Join/Enrich)        (Analyze)   │
+    │                                                                         │
+    │   ┌─────────┐      ┌─────────┐       ┌──────────────┐    ┌──────────┐  │
+    │   │ orders  │ ──►  │stg_     │  ──►  │int_orders_   │──► │fct_orders│  │
+    │   │ (raw)   │      │orders   │       │enriched      │    │          │  │
+    │   └─────────┘      └─────────┘       └──────────────┘    └──────────┘  │
+    │                          │                 │                    │       │
+    │                          ▼                 ▼                    ▼       │
+    │                    ┌─────────┐       ┌──────────────┐    ┌──────────┐  │
+    │                    │stg_line │  ──►  │int_customers_│──► │dim_      │  │
+    │                    │_items   │       │order_history │    │customers │  │
+    │                    └─────────┘       └──────────────┘    └──────────┘  │
+    │                          │                                      │       │
+    │                          ▼                                      ▼       │
+    │                    ┌─────────┐                            ┌──────────┐  │
+    │                    │stg_     │                            │dim_      │  │
+    │                    │fulfill  │                            │products  │  │
+    │                    └─────────┘                            └──────────┘  │
+    │                                                                         │
+    └─────────────────────────────────────────────────────────────────────────┘
+
+    Data flows LEFT to RIGHT, getting more refined at each step.
+
+
+================================================================================
+LAYER 1: STAGING (stg_)
+================================================================================
+
+PURPOSE: Clean and standardize raw data
+PREFIX: stg_
+LOCATION: models/staging/{source_name}/
+
+WHAT STAGING DOES:
+    ✓ Rename columns to consistent naming convention
+    ✓ Cast data types (STRING → TIMESTAMP, etc.)
+    ✓ Handle nulls and defaults
+    ✓ Deduplicate records
+    ✓ Light transformations (lowercase, trim)
+    ✓ UNNEST nested arrays into separate tables
+
+WHAT STAGING DOES NOT DO:
+    ✗ Join tables together
+    ✗ Complex business logic
+    ✗ Aggregations
+    ✗ Create new entities
+
+YOUR STAGING MODELS:
+    models/staging/shopify/
+    ├── stg_shopify__orders.sql           ← Orders cleaned + deduped
+    ├── stg_shopify__order_line_items.sql ← Line items extracted
+    └── stg_shopify__fulfillments.sql     ← Fulfillments extracted
+
+NAMING CONVENTION:
+    stg_{source}__{entity}
+    
+    Examples:
+    - stg_shopify__orders
+    - stg_stripe__payments
+    - stg_google_analytics__sessions
+
+WHY DOUBLE UNDERSCORE?
+    - Single underscore within source name: google_analytics
+    - Double underscore separates source from entity
+    - stg_google_analytics__sessions is unambiguous
+
+
+================================================================================
+LAYER 2: INTERMEDIATE (int_)
+================================================================================
+
+PURPOSE: Join tables, apply business logic, create reusable building blocks
+PREFIX: int_
+LOCATION: models/intermediate/{domain}/
+
+WHAT INTERMEDIATE DOES:
+    ✓ Join staging tables together
+    ✓ Apply business rules and calculations
+    ✓ Create derived columns
+    ✓ Prepare data for marts
+    ✓ Handle complex transformations
+
+WHEN TO USE INTERMEDIATE:
+    - Logic is used by multiple marts
+    - Transformation is complex enough to warrant its own model
+    - You need to join before aggregating
+
+EXAMPLE: int_orders__enriched
+    - Join orders with customers
+    - Calculate order-level metrics
+    - Add customer context to each order
+
+NAMING CONVENTION:
+    int_{entity}__{transformation_description}
+    
+    Examples:
+    - int_orders__enriched (orders with customer data)
+    - int_customers__order_history (customers with order stats)
+    - int_payments__pivoted_by_method (payments by type)
+
+
+================================================================================
+LAYER 3: MARTS (fct_ and dim_)
+================================================================================
+
+PURPOSE: Final, analysis-ready tables for business users
+PREFIX: fct_ (facts) or dim_ (dimensions)
+LOCATION: models/marts/{domain}/
+
+MARTS ARE:
+    ✓ The "final products" of your dbt pipeline
+    ✓ Optimized for querying and dashboards
+    ✓ Designed around business questions
+    ✓ Often following dimensional modeling (star schema)
+
+TWO TYPES OF MARTS:
+
+    FACT TABLES (fct_)
+    ├── Store EVENTS or TRANSACTIONS
+    ├── One row per event (order, payment, click)
+    ├── Contain metrics (amounts, quantities, counts)
+    └── Reference dimensions via foreign keys
+
+    DIMENSION TABLES (dim_)
+    ├── Store ENTITIES or REFERENCE DATA
+    ├── One row per entity (customer, product, store)
+    ├── Contain descriptive attributes
+    └── Used to filter and group facts
+
+EXAMPLE MARTS FOR SHOPIFY:
+    models/marts/core/
+    ├── fct_orders.sql          ← One row per order with metrics
+    ├── fct_daily_revenue.sql   ← Daily aggregated revenue
+    ├── dim_customers.sql       ← One row per customer
+    └── dim_products.sql        ← One row per product
+
+
+================================================================================
+THE COMPLETE PICTURE
+================================================================================
+
+    LAYER        | PREFIX | PURPOSE               | MATERIALIZATION
+    -------------|--------|----------------------|------------------
+    Sources      | N/A    | Raw data reference   | N/A (external)
+    Staging      | stg_   | Clean & standardize  | View
+    Intermediate | int_   | Join & transform     | View or Ephemeral
+    Marts        | fct_   | Fact tables          | Table
+    Marts        | dim_   | Dimension tables     | Table
+
+
+================================================================================
+MATERIALIZATION STRATEGY
+================================================================================
+
+VIEWS (staging, intermediate):
+    - No storage cost
+    - Always up-to-date
+    - Re-computes on each query
+    - Fast to create
+    
+    {{ config(materialized='view') }}
+
+TABLES (marts):
+    - Stored in warehouse
+    - Query performance is faster
+    - Takes storage space
+    - Must refresh to update
+    
+    {{ config(materialized='table') }}
+
+EPHEMERAL (helper models):
+    - Not materialized at all
+    - Inlined as CTE in downstream models
+    - No storage, no query overhead
+    
+    {{ config(materialized='ephemeral') }}
+
+
+================================================================================
+FOLDER STRUCTURE
+================================================================================
+
+Your models/ folder should look like this:
+
+    models/
+    │
+    ├── staging/                         # Layer 1: Staging
+    │   ├── shopify/                     # Grouped by source
+    │   │   ├── _shopify__sources.yml    # Source definitions
+    │   │   ├── _shopify__models.yml     # Model documentation
+    │   │   ├── stg_shopify__orders.sql
+    │   │   ├── stg_shopify__order_line_items.sql
+    │   │   └── stg_shopify__fulfillments.sql
+    │   │
+    │   └── stripe/                      # Another source (future)
+    │       └── ...
+    │
+    ├── intermediate/                    # Layer 2: Intermediate
+    │   └── shopify/                     # Grouped by domain
+    │       ├── _int_shopify__models.yml
+    │       ├── int_orders__enriched.sql
+    │       └── int_customers__order_history.sql
+    │
+    └── marts/                           # Layer 3: Marts
+        ├── core/                        # Core business metrics
+        │   ├── _core__models.yml
+        │   ├── fct_orders.sql
+        │   ├── fct_daily_revenue.sql
+        │   ├── dim_customers.sql
+        │   └── dim_products.sql
+        │
+        └── marketing/                   # Marketing-specific (future)
+            └── ...
+
+
+================================================================================
+WHY LAYERS MATTER
+================================================================================
+
+1. MAINTAINABILITY
+   - Bug in raw data? Fix in staging, all downstream updates
+   - Business logic change? Update intermediate, marts get it
+   - Each layer has one job = easier to debug
+
+2. REUSABILITY  
+   - Staging used by multiple intermediate models
+   - Intermediate used by multiple marts
+   - Don't repeat yourself (DRY principle)
+
+3. TESTING
+   - Test staging: data quality issues
+   - Test marts: business logic correctness
+   - Catch errors at the right layer
+
+4. PERFORMANCE
+   - Views for lightweight layers (staging, intermediate)
+   - Tables for heavy-use layers (marts)
+   - Optimize where it matters
+
+5. COLLABORATION
+   - Data engineers own staging
+   - Analytics engineers own intermediate/marts
+   - Clear ownership and responsibilities
+
+
+================================================================================
+COMMON ANTI-PATTERNS (WHAT NOT TO DO)
+================================================================================
+
+❌ ANTI-PATTERN 1: Mega-models
+   One 500-line SQL file that does everything
+   INSTEAD: Break into staging → intermediate → mart
+
+❌ ANTI-PATTERN 2: Duplicating logic  
+   Same join written in 5 different models
+   INSTEAD: Create one intermediate model, ref() it everywhere
+
+❌ ANTI-PATTERN 3: Skipping staging
+   Going directly from source to marts
+   INSTEAD: Always have staging for clean upstream data
+
+❌ ANTI-PATTERN 4: Over-engineering
+   Creating 10 intermediate models for a simple mart
+   INSTEAD: Use intermediate only when needed
+
+❌ ANTI-PATTERN 5: Wrong materialization
+   Making staging tables (expensive) or marts views (slow)
+   INSTEAD: Views for staging, tables for marts
+
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+Now that you understand the architecture, let's learn:
+1. Dimensional modeling (facts and dimensions)
+2. Building intermediate models
+3. Creating your first mart
+
+NEXT FILE: 02_dimensional_modeling.txt
+

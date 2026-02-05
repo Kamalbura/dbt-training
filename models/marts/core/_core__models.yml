@@ -1,0 +1,138 @@
+version: 2
+
+models:
+  # =============================================================================
+  # FACT TABLES
+  # =============================================================================
+  - name: fct_orders
+    description: |
+      Order-level fact table containing all orders with financial metrics.
+      This is the primary table for order analysis.
+      
+      **Grain:** One row per order
+    
+    columns:
+      - name: order_id
+        description: Unique identifier for the order (primary key)
+        tests:
+          - unique
+          - not_null
+      
+      - name: customer_id
+        description: Foreign key to dim_customers
+        tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customers')
+                field: customer_id
+      
+      - name: order_date
+        description: Date the order was placed
+        tests:
+          - not_null
+      
+      - name: total_amount
+        description: Total amount paid by customer
+        tests:
+          - not_null
+      
+      - name: payment_status
+        description: Current payment status
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['paid', 'pending', 'refunded', 'voided', 'partially_refunded', 'authorized', 'partially_paid']
+              config:
+                severity: warn
+      
+      - name: order_size_bucket
+        description: Order size category
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['small', 'medium', 'large', 'enterprise']
+
+  - name: fct_daily_revenue
+    description: |
+      Daily aggregated revenue metrics for executive dashboards.
+      
+      **Grain:** One row per day
+    
+    columns:
+      - name: order_date
+        description: The date (primary key)
+        tests:
+          - unique
+          - not_null
+
+  # =============================================================================
+  # DIMENSION TABLES
+  # =============================================================================
+  - name: dim_customers
+    description: |
+      Customer dimension with RFM segmentation, tiers, and lifetime metrics.
+      
+      **Grain:** One row per customer
+    
+    columns:
+      - name: customer_id
+        description: Unique customer identifier (primary key)
+        tests:
+          - unique
+          - not_null
+      
+      - name: customer_tier
+        description: Customer value tier
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['platinum', 'gold', 'silver', 'bronze']
+      
+      - name: frequency_segment
+        description: Order frequency segment
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['one_time', 'developing', 'loyal', 'champion']
+      
+      - name: recency_segment
+        description: Recency segment
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['active', 'cooling', 'at_risk', 'churned']
+      
+      - name: value_segment
+        description: Value segment based on lifetime revenue
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['low_value', 'medium_value', 'high_value', 'vip']
+
+  - name: dim_products
+    description: |
+      Product dimension with sales metrics and rankings.
+      
+      **Grain:** One row per product
+    
+    columns:
+      - name: product_id
+        description: Unique product identifier (primary key)
+        tests:
+          - unique
+          - not_null
+      
+      - name: product_tier
+        description: Product ranking tier
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['top_10', 'top_50', 'top_100', 'other']
+      
+      - name: product_status
+        description: Current product status
+        tests:
+          - accepted_values:
+              arguments:
+                values: ['new', 'active', 'dormant']

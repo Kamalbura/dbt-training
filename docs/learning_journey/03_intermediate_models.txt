@@ -1,0 +1,451 @@
+================================================================================
+INTERMEDIATE MODELS
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders
+================================================================================
+
+Intermediate models are the "prep work" between staging and marts.
+They join, transform, and enrich data to make mart creation simple.
+
+
+================================================================================
+WHEN TO USE INTERMEDIATE MODELS
+================================================================================
+
+USE INTERMEDIATE WHEN:
+    ✓ The same join is needed by multiple marts
+    ✓ Business logic is complex and needs isolation
+    ✓ You want to make marts simpler and more readable
+    ✓ Transformation could be reused as a building block
+
+DON'T USE INTERMEDIATE WHEN:
+    ✗ Logic is simple and only used once
+    ✗ It would just duplicate staging with no added value
+    ✗ Over-engineering for a simple use case
+
+
+================================================================================
+EXAMPLE 1: int_orders__enriched
+================================================================================
+
+PURPOSE: Combine order data with customer info and line item summaries
+
+This model will:
+1. Start with deduplicated orders
+2. Join in customer details
+3. Add line item aggregations (count, total quantity)
+4. Calculate derived metrics
+
+
+THE SQL:
+
+-- models/intermediate/shopify/int_orders__enriched.sql
+
+{{ config(
+    materialized='view',
+    description='Orders enriched with customer context and line item aggregates'
+) }}
+
+WITH orders AS (
+    -- Reference the staging model
+    SELECT * FROM {{ ref('stg_shopify__orders') }}
+),
+
+line_item_summary AS (
+    -- Aggregate line items to order level
+    SELECT
+        order_id,
+        COUNT(*) AS line_item_count,
+        SUM(quantity) AS total_quantity,
+        SUM(line_total_before_discount) AS line_items_total
+    FROM {{ ref('stg_shopify__order_line_items') }}
+    GROUP BY order_id
+),
+
+fulfillment_summary AS (
+    -- Get fulfillment info per order
+    SELECT
+        order_id,
+        MIN(fulfilled_at) AS first_fulfilled_at,
+        MAX(fulfilled_at) AS last_fulfilled_at,
+        COUNT(*) AS fulfillment_count,
+        MAX(is_delivered) AS is_fully_delivered
+    FROM {{ ref('stg_shopify__fulfillments') }}
+    GROUP BY order_id
+),
+
+enriched AS (
+    SELECT
+        -- Order fields
+        o.order_id,
+        o.customer_id,
+        o.order_name,
+        o.order_number,
+        o.order_created_at,
+        o.order_processed_at,
+        
+        -- Financial metrics (from orders)
+        o.subtotal_amount,
+        o.discount_amount,
+        o.tax_amount,
+        o.total_amount,
+        o.tip_amount,
+        
+        -- Statuses
+        o.payment_status,
+        o.fulfillment_status,
+        o.cancellation_reason,
+        
+        -- Source tracking
+        o.order_source,
+        o.referring_site,
+        
+        -- Customer flags
+        o.accepts_marketing,
+        o.is_first_order,
+        o.customer_order_sequence,
+        o.customer_lifetime_value,
+        o.customer_total_orders,
+        
+        -- Line item metrics (from aggregation)
+        COALESCE(lis.line_item_count, 0) AS line_item_count,
+        COALESCE(lis.total_quantity, 0) AS total_quantity,
+        COALESCE(lis.line_items_total, 0) AS line_items_total,
+        
+        -- Fulfillment metrics (from aggregation)
+        fs.first_fulfilled_at,
+        fs.last_fulfilled_at,
+        COALESCE(fs.fulfillment_count, 0) AS fulfillment_count,
+        COALESCE(fs.is_fully_delivered, FALSE) AS is_fully_delivered,
+        
+        -- Calculate: Time to first fulfillment
+        TIMESTAMP_DIFF(
+            fs.first_fulfilled_at, 
+            o.order_created_at, 
+            HOUR
+        ) AS hours_to_first_fulfillment,
+        
+        -- Calculate: Is this a canceled order?
+        CASE 
+            WHEN o.cancellation_reason IS NOT NULL THEN TRUE 
+            ELSE FALSE 
+        END AS is_canceled,
+        
+        -- Calculate: Order size bucket
+        CASE
+            WHEN o.total_amount < 25 THEN 'small'
+            WHEN o.total_amount < 100 THEN 'medium'
+            WHEN o.total_amount < 250 THEN 'large'
+            ELSE 'enterprise'
+        END AS order_size_bucket,
+        
+        -- Calculate: Discount rate
+        SAFE_DIVIDE(o.discount_amount, o.subtotal_amount) AS discount_rate
+
+    FROM orders o
+    LEFT JOIN line_item_summary lis ON o.order_id = lis.order_id
+    LEFT JOIN fulfillment_summary fs ON o.order_id = fs.order_id
+)
+
+SELECT * FROM enriched
+
+
+--------------------------------------------------------------------------------
+WHAT THIS MODEL DOES:
+--------------------------------------------------------------------------------
+
+1. JOINS THREE STAGING TABLES:
+   - stg_shopify__orders (main table)
+   - stg_shopify__order_line_items (aggregated to order level)
+   - stg_shopify__fulfillments (aggregated to order level)
+
+2. AGGREGATES LINE ITEMS:
+   - COUNT(*) → How many line items per order
+   - SUM(quantity) → Total units purchased
+   - SUM(line_total) → Total before discounts
+
+3. AGGREGATES FULFILLMENTS:
+   - MIN/MAX fulfilled_at → First and last shipment
+   - COUNT(*) → Number of shipments
+   - MAX(is_delivered) → All items delivered?
+
+4. CALCULATES DERIVED METRICS:
+   - hours_to_first_fulfillment (order → shipment time)
+   - is_canceled (boolean flag)
+   - order_size_bucket (small/medium/large/enterprise)
+   - discount_rate (percentage discounted)
+
+5. HANDLES NULLS:
+   - COALESCE for counts (0 instead of NULL)
+   - SAFE_DIVIDE to avoid division by zero
+
+
+================================================================================
+EXAMPLE 2: int_customers__order_history
+================================================================================
+
+PURPOSE: Build customer-level metrics from order history
+
+This is a "customer 360" view - everything we know about a customer.
+
+
+THE SQL:
+
+-- models/intermediate/shopify/int_customers__order_history.sql
+
+{{ config(
+    materialized='view',
+    description='Customer-level aggregations from order history'
+) }}
+
+WITH orders AS (
+    SELECT * FROM {{ ref('stg_shopify__orders') }}
+),
+
+customer_orders AS (
+    SELECT
+        customer_id,
+        
+        -- Order counts
+        COUNT(*) AS total_orders,
+        COUNTIF(is_first_order) AS first_orders,  -- Should be 1
+        
+        -- Revenue metrics
+        SUM(total_amount) AS lifetime_revenue,
+        AVG(total_amount) AS average_order_value,
+        MIN(total_amount) AS min_order_value,
+        MAX(total_amount) AS max_order_value,
+        
+        -- Date metrics
+        MIN(order_created_at) AS first_order_at,
+        MAX(order_created_at) AS most_recent_order_at,
+        
+        -- Behavior metrics
+        COUNTIF(accepts_marketing) AS orders_with_marketing_consent,
+        COUNTIF(discount_amount > 0) AS orders_with_discount,
+        SUM(discount_amount) AS total_discounts_used,
+        
+        -- Source analysis
+        ARRAY_AGG(DISTINCT order_source IGNORE NULLS) AS order_sources,
+        
+        -- Status analysis
+        COUNTIF(payment_status = 'refunded') AS refunded_orders,
+        COUNTIF(cancellation_reason IS NOT NULL) AS canceled_orders
+
+    FROM orders
+    WHERE customer_id IS NOT NULL  -- Exclude guest orders
+    GROUP BY customer_id
+),
+
+with_derived_metrics AS (
+    SELECT
+        *,
+        
+        -- Days since first order
+        DATE_DIFF(
+            CURRENT_DATE(), 
+            DATE(first_order_at), 
+            DAY
+        ) AS days_as_customer,
+        
+        -- Days since last order
+        DATE_DIFF(
+            CURRENT_DATE(), 
+            DATE(most_recent_order_at), 
+            DAY
+        ) AS days_since_last_order,
+        
+        -- Average days between orders
+        SAFE_DIVIDE(
+            DATE_DIFF(
+                DATE(most_recent_order_at),
+                DATE(first_order_at),
+                DAY
+            ),
+            total_orders - 1
+        ) AS avg_days_between_orders,
+        
+        -- Discount usage rate
+        SAFE_DIVIDE(orders_with_discount, total_orders) AS discount_usage_rate,
+        
+        -- Refund rate
+        SAFE_DIVIDE(refunded_orders, total_orders) AS refund_rate
+
+    FROM customer_orders
+),
+
+with_segmentation AS (
+    SELECT
+        *,
+        
+        -- Customer segment based on behavior
+        CASE
+            WHEN total_orders = 1 THEN 'one_time'
+            WHEN total_orders BETWEEN 2 AND 3 THEN 'developing'
+            WHEN total_orders BETWEEN 4 AND 10 THEN 'loyal'
+            ELSE 'champion'
+        END AS frequency_segment,
+        
+        -- Recency segment
+        CASE
+            WHEN days_since_last_order <= 30 THEN 'active'
+            WHEN days_since_last_order <= 90 THEN 'cooling'
+            WHEN days_since_last_order <= 180 THEN 'at_risk'
+            ELSE 'churned'
+        END AS recency_segment,
+        
+        -- Value segment
+        CASE
+            WHEN lifetime_revenue < 100 THEN 'low_value'
+            WHEN lifetime_revenue < 500 THEN 'medium_value'
+            WHEN lifetime_revenue < 2000 THEN 'high_value'
+            ELSE 'vip'
+        END AS value_segment
+
+    FROM with_derived_metrics
+)
+
+SELECT * FROM with_segmentation
+
+
+--------------------------------------------------------------------------------
+WHAT THIS MODEL DOES:
+--------------------------------------------------------------------------------
+
+1. AGGREGATES BY CUSTOMER:
+   - One row per customer_id
+   - Summarizes all their orders
+
+2. CALCULATES LIFETIME METRICS:
+   - total_orders, lifetime_revenue
+   - first/last order dates
+   - average order value
+
+3. DERIVES BEHAVIORAL INSIGHTS:
+   - days_as_customer (tenure)
+   - days_since_last_order (recency)
+   - avg_days_between_orders (frequency)
+   - discount_usage_rate
+
+4. SEGMENTS CUSTOMERS:
+   - frequency_segment: one_time → champion
+   - recency_segment: active → churned
+   - value_segment: low_value → vip
+
+
+================================================================================
+THE ref() FUNCTION
+================================================================================
+
+Notice how we reference other models:
+
+    SELECT * FROM {{ ref('stg_shopify__orders') }}
+
+The ref() function:
+1. Creates a dependency (dbt knows to build staging first)
+2. Resolves to the correct table name (handles environments)
+3. Documents the lineage (shows in DAG)
+
+NEVER hardcode table names in dbt:
+
+    ❌ BAD:  SELECT * FROM `project.dataset.stg_shopify__orders`
+    ✓ GOOD: SELECT * FROM {{ ref('stg_shopify__orders') }}
+
+
+================================================================================
+NAMING CONVENTIONS
+================================================================================
+
+Intermediate model names follow this pattern:
+
+    int_{entity}__{description}
+
+Examples:
+    int_orders__enriched           (orders with added context)
+    int_orders__pivoted_by_status  (orders pivoted by status)
+    int_customers__order_history   (customers with order aggregates)
+    int_products__sales_summary    (products with sales metrics)
+
+The double underscore separates:
+    - The entity (orders, customers, products)
+    - The transformation description
+
+
+================================================================================
+YAML DOCUMENTATION
+================================================================================
+
+Create: models/intermediate/shopify/_int_shopify__models.yml
+
+version: 2
+
+models:
+  - name: int_orders__enriched
+    description: >
+      Orders enriched with customer context, line item aggregates, 
+      and fulfillment metrics. One row per order.
+    columns:
+      - name: order_id
+        description: Primary key
+        tests:
+          - unique
+          - not_null
+      - name: line_item_count
+        description: Number of distinct products in the order
+      - name: order_size_bucket
+        description: Categorization based on order amount
+
+  - name: int_customers__order_history
+    description: >
+      Customer-level aggregations and segmentation based on order history.
+      One row per customer.
+    columns:
+      - name: customer_id
+        description: Primary key
+        tests:
+          - unique
+          - not_null
+      - name: frequency_segment
+        description: Customer frequency tier
+        tests:
+          - accepted_values:
+              values: ['one_time', 'developing', 'loyal', 'champion']
+
+
+================================================================================
+BEST PRACTICES
+================================================================================
+
+1. KEEP GRAIN CLEAR
+   - int_orders__enriched: one row per order
+   - int_customers__order_history: one row per customer
+   - Document the grain!
+
+2. USE COALESCE FOR NULLS
+   - LEFT JOINs can produce NULLs
+   - COALESCE(lis.line_item_count, 0) AS line_item_count
+
+3. USE SAFE_DIVIDE
+   - Avoid division by zero errors
+   - SAFE_DIVIDE(a, b) returns NULL if b = 0
+
+4. AGGREGATE BEFORE JOIN
+   - Avoid row multiplication
+   - Join aggregated CTEs, not raw tables
+
+5. MATERIALIZE AS VIEW
+   - Intermediate models are usually views
+   - Tables only if frequently queried directly
+
+
+================================================================================
+NEXT STEPS
+================================================================================
+
+Now let's build the final marts:
+- fct_orders (fact table)
+- dim_customers (dimension table)
+
+NEXT FILE: 04_fact_tables.txt
+

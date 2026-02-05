@@ -1,0 +1,543 @@
+================================================================================
+ADVANCED TESTING IN dbt
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders
+================================================================================
+
+Testing is how you guarantee data quality. dbt makes testing easy,
+and advanced testing makes your pipeline bulletproof.
+
+
+================================================================================
+TESTING LAYERS
+================================================================================
+
+    ┌─────────────────────────────────────────────────────────────────────────┐
+    │                          TESTING PYRAMID                               │
+    ├─────────────────────────────────────────────────────────────────────────┤
+    │                                                                         │
+    │                          ┌─────────────┐                               │
+    │                          │  BUSINESS   │  ← Does data match reality?   │
+    │                          │   TESTS     │     "Total revenue = $X?"     │
+    │                          └─────────────┘                               │
+    │                                                                         │
+    │                     ┌───────────────────────┐                          │
+    │                     │   RELATIONSHIP TESTS  │  ← Do tables connect?    │
+    │                     │   (referential int.)  │     "All order FKs exist"│
+    │                     └───────────────────────┘                          │
+    │                                                                         │
+    │              ┌───────────────────────────────────┐                     │
+    │              │       STRUCTURE TESTS             │  ← Is schema right? │
+    │              │   (unique, not_null, accepted)    │     "IDs are unique"│
+    │              └───────────────────────────────────┘                     │
+    │                                                                         │
+    │       ┌───────────────────────────────────────────────┐                │
+    │       │              SOURCE TESTS                     │  ← Is raw OK?  │
+    │       │       (freshness, not_null on source)         │                │
+    │       └───────────────────────────────────────────────┘                │
+    │                                                                         │
+    └─────────────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+BUILT-IN TESTS (SCHEMA TESTS)
+================================================================================
+
+These are the tests you've already used:
+
+
+1. UNIQUE
+----------
+Ensures no duplicate values in a column.
+
+    columns:
+      - name: order_id
+        tests:
+          - unique
+
+Generated SQL:
+    SELECT order_id
+    FROM model
+    GROUP BY order_id
+    HAVING COUNT(*) > 1
+
+
+2. NOT_NULL
+-----------
+Ensures no NULL values in a column.
+
+    columns:
+      - name: order_id
+        tests:
+          - not_null
+
+Generated SQL:
+    SELECT order_id
+    FROM model
+    WHERE order_id IS NULL
+
+
+3. ACCEPTED_VALUES
+------------------
+Ensures column only contains expected values.
+
+    columns:
+      - name: payment_status
+        tests:
+          - accepted_values:
+              values: ['paid', 'pending', 'refunded', 'voided']
+
+Generated SQL:
+    SELECT payment_status
+    FROM model
+    WHERE payment_status NOT IN ('paid', 'pending', 'refunded', 'voided')
+
+
+4. RELATIONSHIPS
+----------------
+Ensures referential integrity between tables.
+
+    columns:
+      - name: customer_id
+        tests:
+          - relationships:
+              to: ref('dim_customers')
+              field: customer_id
+
+Generated SQL:
+    SELECT customer_id
+    FROM model
+    WHERE customer_id NOT IN (
+        SELECT customer_id FROM dim_customers
+    )
+
+This catches orphan records!
+
+
+================================================================================
+CUSTOM SQL TESTS (SINGULAR TESTS)
+================================================================================
+
+For complex validations, write your own SQL test.
+
+LOCATION: tests/
+
+RULE: Test PASSES if query returns ZERO rows.
+
+
+EXAMPLE 1: Revenue should always be positive
+
+-- tests/assert_positive_revenue.sql
+SELECT 
+    order_id,
+    total_amount
+FROM {{ ref('fct_orders') }}
+WHERE total_amount < 0
+
+
+EXAMPLE 2: Discount should not exceed subtotal
+
+-- tests/assert_discount_not_exceeds_subtotal.sql
+SELECT 
+    order_id,
+    subtotal_amount,
+    discount_amount
+FROM {{ ref('fct_orders') }}
+WHERE discount_amount > subtotal_amount
+
+
+EXAMPLE 3: Every customer should have at least one order
+
+-- tests/assert_customers_have_orders.sql
+SELECT 
+    c.customer_id
+FROM {{ ref('dim_customers') }} c
+LEFT JOIN {{ ref('fct_orders') }} o ON c.customer_id = o.customer_id
+WHERE o.order_id IS NULL
+
+
+EXAMPLE 4: Row count check (compare to source)
+
+-- tests/assert_no_orders_lost.sql
+WITH source_count AS (
+    SELECT COUNT(DISTINCT id) AS cnt
+    FROM {{ source('shopify_raw', 'orders') }}
+),
+staging_count AS (
+    SELECT COUNT(*) AS cnt
+    FROM {{ ref('stg_shopify__orders') }}
+)
+SELECT *
+FROM source_count s, staging_count t
+WHERE s.cnt != t.cnt
+
+
+================================================================================
+TESTING FRESHNESS
+================================================================================
+
+Source freshness checks if your raw data is up-to-date.
+
+In _shopify__sources.yml:
+
+    sources:
+      - name: shopify_raw
+        freshness:
+          warn_after: {count: 24, period: hour}
+          error_after: {count: 48, period: hour}
+        loaded_at_field: _daton_batch_runtime  # Timestamp column
+        tables:
+          - name: orders
+
+
+RUN FRESHNESS CHECK:
+    dbt source freshness
+
+OUTPUT:
+    ┌─────────────────┬───────────────────────┬──────────┐
+    │ source          │ max_loaded_at         │ status   │
+    ├─────────────────┼───────────────────────┼──────────┤
+    │ shopify.orders  │ 2024-01-15 10:00:00   │ PASS     │
+    └─────────────────┴───────────────────────┴──────────┘
+
+If data is older than thresholds:
+    - warn_after: WARN status (yellow)
+    - error_after: ERROR status (red)
+
+
+================================================================================
+dbt-utils TESTS
+================================================================================
+
+The dbt-utils package provides additional tests.
+
+INSTALL:
+Add to packages.yml:
+
+    packages:
+      - package: dbt-labs/dbt_utils
+        version: [">=1.0.0", "<2.0.0"]
+
+Then run:
+    dbt deps
+
+
+AVAILABLE TESTS:
+
+1. expression_is_true
+   Validate any SQL expression
+
+    - dbt_utils.expression_is_true:
+        expression: "total_amount >= 0"
+
+2. equal_rowcount
+   Ensure two models have same row count
+
+    - dbt_utils.equal_rowcount:
+        compare_model: ref('stg_shopify__orders')
+
+3. fewer_rows_than
+   Ensure model has fewer rows than another
+
+    - dbt_utils.fewer_rows_than:
+        compare_model: ref('stg_shopify__orders')
+
+4. recency
+   Check that data is recent enough
+
+    - dbt_utils.recency:
+        datepart: day
+        field: order_created_at
+        interval: 3
+
+5. at_least_one
+   Ensure at least one record exists
+
+    - dbt_utils.at_least_one:
+        column_name: order_id
+
+
+================================================================================
+dbt-expectations TESTS
+================================================================================
+
+Inspired by Great Expectations Python library.
+
+INSTALL:
+    packages:
+      - package: calogica/dbt_expectations
+        version: [">=0.10.0", "<0.11.0"]
+
+
+EXAMPLE TESTS:
+
+1. expect_column_values_to_be_between
+
+    - dbt_expectations.expect_column_values_to_be_between:
+        column_name: total_amount
+        min_value: 0
+        max_value: 100000
+
+2. expect_column_value_lengths_to_be_between
+
+    - dbt_expectations.expect_column_value_lengths_to_be_between:
+        column_name: customer_email
+        min_value: 5
+        max_value: 255
+
+3. expect_column_values_to_match_regex
+
+    - dbt_expectations.expect_column_values_to_match_regex:
+        column_name: customer_email
+        regex: "^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+$"
+
+4. expect_table_row_count_to_be_between
+
+    - dbt_expectations.expect_table_row_count_to_be_between:
+        min_value: 100
+        max_value: 1000000
+
+5. expect_column_distinct_count_to_equal
+
+    - dbt_expectations.expect_column_distinct_count_to_equal:
+        column_name: payment_status
+        value: 5
+
+
+================================================================================
+TEST SEVERITY
+================================================================================
+
+Not all test failures are equal. Configure severity:
+
+    columns:
+      - name: customer_email
+        tests:
+          - not_null:
+              severity: warn  # Don't fail, just warn
+          - unique:
+              severity: error  # Fail the run (default)
+
+SEVERITY OPTIONS:
+- error: Fail the dbt run (default)
+- warn: Log warning but continue
+
+
+================================================================================
+CONDITIONAL TESTS
+================================================================================
+
+Run tests only in certain conditions:
+
+    - not_null:
+        config:
+          where: "is_canceled = FALSE"  # Only test non-canceled orders
+
+Or:
+    - unique:
+        config:
+          enabled: "{{ target.name == 'prod' }}"  # Only in production
+
+
+================================================================================
+TEST DOCUMENTATION
+================================================================================
+
+Document what each test validates:
+
+    models:
+      - name: fct_orders
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "discount_amount <= subtotal_amount"
+              config:
+                severity: error
+              meta:
+                description: "Discounts should never exceed subtotal"
+                owner: data_quality_team
+                jira_ticket: DQ-123
+
+
+================================================================================
+COMPLETE TEST STRATEGY FOR YOUR PROJECT
+================================================================================
+
+Here's a comprehensive testing plan:
+
+
+SOURCE LEVEL:
+    sources:
+      - name: shopify_raw
+        freshness:
+          warn_after: {count: 24, period: hour}
+          error_after: {count: 48, period: hour}
+        tables:
+          - name: orders
+            columns:
+              - name: id
+                tests:
+                  - not_null
+
+
+STAGING LEVEL:
+    models:
+      - name: stg_shopify__orders
+        tests:
+          - dbt_utils.recency:
+              datepart: day
+              field: order_created_at
+              interval: 7
+        columns:
+          - name: order_id
+            tests:
+              - unique
+              - not_null
+          - name: customer_id
+            tests:
+              - not_null
+          - name: total_amount
+            tests:
+              - not_null
+              - dbt_expectations.expect_column_values_to_be_between:
+                  min_value: 0
+
+
+MART LEVEL:
+    models:
+      - name: fct_orders
+        tests:
+          - dbt_utils.expression_is_true:
+              expression: "discount_amount <= subtotal_amount"
+        columns:
+          - name: order_id
+            tests:
+              - unique
+              - not_null
+          - name: customer_id
+            tests:
+              - relationships:
+                  to: ref('dim_customers')
+                  field: customer_id
+          - name: payment_status
+            tests:
+              - accepted_values:
+                  values: ['paid', 'pending', 'refunded', 'voided', 'partially_refunded']
+
+      - name: dim_customers
+        columns:
+          - name: customer_id
+            tests:
+              - unique
+              - not_null
+          - name: customer_tier
+            tests:
+              - accepted_values:
+                  values: ['platinum', 'gold', 'silver', 'bronze']
+
+
+================================================================================
+RUNNING TESTS
+================================================================================
+
+RUN ALL TESTS:
+    dbt test
+
+RUN TESTS FOR SPECIFIC MODEL:
+    dbt test --select stg_shopify__orders
+
+RUN TESTS FOR MODEL AND DOWNSTREAM:
+    dbt test --select stg_shopify__orders+
+
+RUN AFTER BUILDING:
+    dbt build  # Combines dbt run + dbt test
+
+RUN ONLY SOURCE TESTS:
+    dbt test --select source:shopify_raw
+
+RUN ONLY A SPECIFIC TEST TYPE:
+    dbt test --select test_type:singular
+
+
+================================================================================
+TEST FAILURE WORKFLOW
+================================================================================
+
+When a test fails:
+
+1. READ THE ERROR MESSAGE
+   Shows which test failed and sample bad rows
+
+2. INSPECT THE COMPILED SQL
+   target/compiled/.../{test_name}.sql
+   
+   Run this manually in BigQuery to see failure
+
+3. CHECK THE DATA
+   Query the bad rows to understand root cause
+
+4. FIX THE ISSUE
+   - Data problem? Fix upstream
+   - Test too strict? Adjust threshold
+   - Logic error? Fix model
+
+5. RE-RUN TESTS
+   dbt test --select model_name
+
+
+================================================================================
+BEST PRACTICES
+================================================================================
+
+1. TEST EVERY PRIMARY KEY
+   - unique + not_null
+
+2. TEST EVERY FOREIGN KEY
+   - relationships test
+
+3. TEST BUSINESS RULES
+   - Custom singular tests
+
+4. USE APPROPRIATE SEVERITY
+   - error for critical
+   - warn for informational
+
+5. DOCUMENT YOUR TESTS
+   - Why does this test exist?
+
+6. RUN TESTS IN CI/CD
+   - Catch issues before production
+
+
+================================================================================
+SUMMARY
+================================================================================
+
+Your testing toolkit:
+
+BUILT-IN:
+- unique, not_null, accepted_values, relationships
+
+PACKAGES:
+- dbt_utils: expression_is_true, recency, equal_rowcount
+- dbt_expectations: statistical tests, regex, ranges
+
+CUSTOM:
+- Singular tests in tests/ folder
+
+SOURCES:
+- Freshness checks
+
+This completes Phase 2 of your learning journey! 🎉
+
+
+================================================================================
+WHAT'S NEXT? (PHASE 3 PREVIEW)
+================================================================================
+
+Coming up in Phase 3:
+- Incremental models (process only new data)
+- Macros (reusable SQL snippets)
+- Jinja templating
+- Snapshots (track changes over time)
+
