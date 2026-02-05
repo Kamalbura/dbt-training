@@ -1,0 +1,127 @@
+================================================================================
+            DBT SEED vs MANUAL UPLOAD - EXPLAINED
+================================================================================
+
+YOUR QUESTION: "Does dbt seed send datasets to the cloud like BigQuery?"
+
+SHORT ANSWER: YES! dbt seed loads CSV files from your seeds/ folder into BigQuery.
+
+
+================================================================================
+                           DBT SEED EXPLAINED
+================================================================================
+
+WHAT IS DBT SEED?
+-----------------
+dbt seed is a command that loads CSV files into your data warehouse.
+
+Command: `dbt seed`
+
+What it does:
+1. Looks in your seeds/ folder
+2. Finds CSV files (like raw_customers.csv)
+3. Creates tables in BigQuery
+4. Loads the CSV data into those tables
+
+Example:
+If you have seeds/countries.csv, running `dbt seed` creates:
+  `saras-bigquery.dbt_training.countries`
+
+
+WHEN TO USE DBT SEED:
+---------------------
+✅ Reference/lookup data (countries, categories)
+✅ Static data that rarely changes
+✅ Small datasets (< 1GB)
+✅ Data you want version-controlled in git
+
+❌ Large datasets (use BigQuery console or ETL tools)
+❌ Data that updates frequently
+❌ Your Shopify orders data (already in BigQuery!)
+
+
+================================================================================
+                           MANUAL UPLOAD vs DBT SEED
+================================================================================
+
+BOTH put data in BigQuery, but they're DIFFERENT tools for DIFFERENT purposes:
+
+┌─────────────────┬─────────────────────┬─────────────────────┐
+│                 │ MANUAL UPLOAD       │ DBT SEED            │
+├─────────────────┼─────────────────────┼─────────────────────┤
+│ Method          │ BigQuery Console    │ dbt seed command    │
+│                 │ or bq load          │                     │
+├─────────────────┼─────────────────────┼─────────────────────┤
+│ Data Source     │ Any file type       │ CSV files only      │
+│                 │ (JSONL, CSV, etc.)  │                     │
+├─────────────────┼─────────────────────┼─────────────────────┤
+│ File Location   │ Local or Cloud      │ seeds/ folder       │
+├─────────────────┼─────────────────────┼─────────────────────┤
+│ Version Control │ Manual              │ Git-tracked         │
+├─────────────────┼─────────────────────┼─────────────────────┤
+│ Automation      │ One-time            │ Repeatable          │
+├─────────────────┼─────────────────────┼─────────────────────┤
+│ Use Case        │ Raw data loading    │ Reference data      │
+└─────────────────┴─────────────────────┴─────────────────────┘
+
+
+================================================================================
+                           YOUR SITUATION
+================================================================================
+
+FOR YOUR SHOPIFY DATA:
+----------------------
+Your JSONL file is ALREADY in BigQuery (you uploaded it manually).
+You DON'T need dbt seed for this data.
+
+Your data flow:
+1. ✅ Raw JSONL → BigQuery (manual upload) 
+2. ✅ dbt models → Transform the data
+3. ❌ No dbt seed needed
+
+FOR REFERENCE DATA (if you had any):
+-----------------------------------
+If you had CSV files like:
+- seeds/country_codes.csv
+- seeds/product_categories.csv
+
+Then you would use: `dbt seed`
+
+
+================================================================================
+                           CHECKING YOUR SETUP
+================================================================================
+
+Your profiles.yml shows:
+- Project: saras-bigquery
+- Dataset: dbt_training
+- Credentials: ✅ service-account.json found
+
+Your dbt_project.yml now has:
+- raw_database: 'saras-bigquery'
+- raw_schema: 'raw_shopify'
+
+NEXT STEPS:
+-----------
+1. Make sure your JSONL data is in: saras-bigquery.raw_shopify.orders
+2. Run: dbt debug (should pass)
+3. Run: dbt run (build your staging models)
+4. Run: dbt test (validate data quality)
+
+
+================================================================================
+                           QUICK VERIFICATION
+================================================================================
+
+Check if your data is loaded:
+
+```sql
+-- Run this in BigQuery console
+SELECT 
+  COUNT(*) as total_orders,
+  MIN(created_at) as earliest_order,
+  MAX(created_at) as latest_order
+FROM `saras-bigquery.raw_shopify.orders`
+```
+
+Expected result: Should show your order counts and dates.

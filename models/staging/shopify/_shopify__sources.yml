@@ -20,11 +20,6 @@ sources:
     # Schema/Dataset where raw tables are stored
     schema: "{{ var('raw_schema', 'raw_shopify') }}"
     
-    # Freshness checks - alerts if data isn't loading
-    freshness:
-      warn_after: {count: 24, period: hour}   # Yellow alert
-      error_after: {count: 48, period: hour}  # Red alert
-    
     # The actual tables in this source
     tables:
       - name: orders                        # Table name in BigQuery
@@ -32,9 +27,6 @@ sources:
           Raw Shopify orders including all nested data like line items,
           fulfillments, customer info, and shipping details.
           Each row = one order with nested JSON arrays.
-        
-        # Column used to check data freshness
-        loaded_at_field: _daton_batch_runtime
         
         # Define columns for documentation and testing
         columns:

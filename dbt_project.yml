@@ -43,10 +43,10 @@ clean-targets:                      # Directories removed by `dbt clean`
 
 vars:
   # BigQuery project where raw data is stored
-  raw_database: 'your-gcp-project-id'     # 👈 CHANGE THIS to your project
+  raw_database: 'saras-bigquery'        # 👈 YOUR PROJECT ID
   
   # BigQuery dataset where raw Shopify data lives
-  raw_schema: 'raw_shopify'               # 👈 Dataset with orders table
+  raw_schema: 'raw_shopify'             # 👈 Dataset with orders table
 
 models:
   shopify_analytics:

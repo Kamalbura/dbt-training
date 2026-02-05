@@ -95,13 +95,15 @@ models:
         description: Payment status (lowercase)
         tests:
           - accepted_values:
-              values: ['paid', 'pending', 'refunded', 'partially_refunded', 'voided', 'authorized']
+              arguments:
+                values: ['paid', 'pending', 'refunded', 'partially_refunded', 'voided', 'authorized']
       
       - name: fulfillment_status
         description: Shipping status (lowercase, defaults to 'unfulfilled')
         tests:
           - accepted_values:
-              values: ['fulfilled', 'unfulfilled', 'partial', 'restocked']
+              arguments:
+                values: ['fulfilled', 'unfulfilled', 'partial', 'restocked']
       
       # Source
       - name: order_source
@@ -160,8 +162,9 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('stg_shopify__orders')
-              field: order_id
+              arguments:
+                to: ref('stg_shopify__orders')
+                field: order_id
       
       - name: product_id
         description: Shopify product ID
@@ -234,8 +237,9 @@ models:
         tests:
           - not_null
           - relationships:
-              to: ref('stg_shopify__orders')
-              field: order_id
+              arguments:
+                to: ref('stg_shopify__orders')
+                field: order_id
       
       - name: fulfillment_name
         description: Fulfillment reference (e.g., "#JC730928.1")
