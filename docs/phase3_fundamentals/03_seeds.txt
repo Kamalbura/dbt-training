@@ -1,0 +1,778 @@
+================================================================================
+dbt SEEDS — THE COMPLETE BEGINNER'S GUIDE
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders (JayCutler.com)
+================================================================================
+
+TABLE OF CONTENTS:
+  1. What Are Seeds?
+  2. When to Use Seeds (and When NOT To)
+  3. How Seeds Work — Step by Step
+  4. Creating Your First Seed
+  5. Seed Configuration Options
+  6. Testing Seeds (schema.yml)
+  7. Using Seeds in Models with ref()
+  8. Seeds vs Sources — The Key Difference
+  9. General Example: Country Codes Lookup
+  10. Shopify Example: Discount Code Mapping
+  11. Shopify Example: Shipping Carrier Mapping
+  12. Advanced: Seed Column Types
+  13. Practical Exercise: Build a Seed for Your Project
+  14. Common Mistakes & Best Practices
+
+
+================================================================================
+1. WHAT ARE SEEDS?
+================================================================================
+
+A SEED is a CSV file in your dbt project that dbt loads into your warehouse
+as a TABLE.
+
+    SIMPLE DEFINITION:
+    CSV file → dbt seed → TABLE in BigQuery
+
+    ANALOGY:
+    Think of seeds like a REFERENCE CARD you keep next to your data:
+    
+    ┌────────────────────────────────────────────────────────┐
+    │  YOUR DATA (fct_orders):                               │
+    │  ┌──────────┬────────────┬──────────────┐              │
+    │  │ order_id │ country_cd │ total_amount │              │
+    │  ├──────────┼────────────┼──────────────┤              │
+    │  │ 001      │ US         │ 53.38        │              │
+    │  │ 002      │ CA         │ 71.53        │              │
+    │  │ 003      │ UK         │ 18.12        │              │
+    │  └──────────┴────────────┴──────────────┘              │
+    │                                                        │
+    │  REFERENCE CARD (seed: country_codes):                  │
+    │  ┌──────────────┬───────────────┬────────────────┐     │
+    │  │ country_code │ country_name  │ region         │     │
+    │  ├──────────────┼───────────────┼────────────────┤     │
+    │  │ US           │ United States │ North America  │     │
+    │  │ CA           │ Canada        │ North America  │     │
+    │  │ UK           │ United Kingdom│ Europe         │     │
+    │  └──────────────┴───────────────┴────────────────┘     │
+    │                                                        │
+    │  JOIN them → Now you know order 001 is from             │
+    │              "United States" in "North America"         │
+    └────────────────────────────────────────────────────────┘
+
+    Seeds are SMALL, STATIC lookup tables that YOU maintain.
+
+
+================================================================================
+2. WHEN TO USE SEEDS (AND WHEN NOT TO)
+================================================================================
+
+    ✅ USE SEEDS FOR:
+    ─────────────────
+    • Lookup/reference data (country codes, status mappings)
+    • Small mapping tables (carrier name standardization)
+    • Business logic tables (discount tiers, customer segments)
+    • Configuration data (which emails to exclude, test order IDs)
+    • Manual overrides (fix specific bad data)
+    • Data that changes rarely (maybe once a month)
+    • Data with less than ~1,000 rows
+
+    EXAMPLES OF GOOD SEEDS:
+    ├── country_codes.csv          (5-250 rows)
+    ├── us_state_codes.csv         (50 rows)
+    ├── shipping_carriers.csv      (10-30 rows)
+    ├── discount_code_mapping.csv  (20-50 rows)
+    ├── excluded_test_emails.csv   (5-20 rows)
+    ├── product_categories.csv     (10-50 rows)
+    └── currency_exchange_rates.csv (depending on frequency)
+
+
+    ❌ DO NOT USE SEEDS FOR:
+    ────────────────────────
+    • Large datasets (1,000+ rows) → Use proper ETL/loading
+    • Data that changes frequently → Use sources
+    • Data from external systems → Use source() + ETL tools
+    • Your Shopify orders (624 rows, but comes from an API!)
+    • Transactional data (orders, payments, events)
+    • Data another team owns
+
+    WHY NOT SEEDS FOR SHOPIFY DATA?
+    Your Shopify orders come from Daton sync → BigQuery.
+    That's an automated pipeline. Seeds are for MANUAL data.
+    
+    ❌ Bad:  Put JSONL order data as a seed
+    ✅ Good: Load via script → BigQuery → source() → dbt models
+
+
+================================================================================
+3. HOW SEEDS WORK — STEP BY STEP
+================================================================================
+
+    STEP 1: You create a CSV file in the seeds/ folder
+    ──────────────────────────────────────────────────
+    seeds/country_codes.csv:
+    
+    country_code,country_name,region
+    US,United States,North America
+    CA,Canada,North America
+    UK,United Kingdom,Europe
+    DE,Germany,Europe
+    FR,France,Europe
+
+    STEP 2: You run `dbt seed`
+    ─────────────────────────
+    In terminal:
+    
+    dbt seed
+    
+    Output:
+    Running with dbt=...
+    Found 1 seed
+    
+    Completed successfully
+    
+    Done. PASS=1 WARN=0 ERROR=0 SKIP=0 TOTAL=1
+
+    STEP 3: dbt creates a TABLE in BigQuery
+    ─────────────────────────────────────
+    Table: `saras-bigquery.dbt_training.country_codes`
+    
+    ┌──────────────┬───────────────┬────────────────┐
+    │ country_code │ country_name  │ region         │
+    ├──────────────┼───────────────┼────────────────┤
+    │ US           │ United States │ North America  │
+    │ CA           │ Canada        │ North America  │
+    │ UK           │ United Kingdom│ Europe         │
+    │ DE           │ Germany       │ Europe         │
+    │ FR           │ France        │ Europe         │
+    └──────────────┴───────────────┴────────────────┘
+
+    STEP 4: You reference it in models using ref()
+    ──────────────────────────────────────────────
+    In any model:
+    
+    SELECT * FROM {{ ref('country_codes') }}
+    
+    This works EXACTLY the same as referencing another model!
+
+    STEP 5: To update, edit the CSV and re-run `dbt seed`
+    ───────────────────────────────────────────────────
+    Add a new row to the CSV:
+    JP,Japan,Asia
+    
+    Run: dbt seed
+    → BigQuery table now has 6 rows instead of 5
+
+
+    WHAT HAPPENS UNDER THE HOOD:
+    
+    dbt seed basically does:
+    
+    CREATE OR REPLACE TABLE `project.dataset.country_codes` (
+        country_code STRING,
+        country_name STRING,
+        region STRING
+    );
+    INSERT INTO `project.dataset.country_codes` VALUES
+        ('US', 'United States', 'North America'),
+        ('CA', 'Canada', 'North America'),
+        ...;
+
+
+================================================================================
+4. CREATING YOUR FIRST SEED
+================================================================================
+
+Let's create a seed for shipping carrier standardization.
+
+    STEP 1: Create the CSV file
+    ──────────────────────────
+    Create: seeds/shipping_carriers.csv
+    
+    raw_carrier_name,standardized_name,carrier_type
+    DHL eCommerce,DHL,Economy
+    DHL express,DHL,Express
+    FedEx,FedEx,Standard
+    UPS,UPS,Standard
+    USPS,USPS,Economy
+    FedEx Ground,FedEx,Economy
+    FedEx Express,FedEx,Express
+    UPS Ground,UPS,Economy
+    UPS Next Day Air,UPS,Express
+
+    STEP 2: Run `dbt seed`
+    ─────────────────────
+    dbt seed
+    
+    → Creates table: dbt_training.shipping_carriers
+
+    STEP 3: Use in a model
+    ─────────────────────
+    -- In stg_shopify__fulfillments.sql or a new model:
+    
+    SELECT
+        f.fulfillment_id,
+        f.shipping_carrier AS original_carrier,
+        COALESCE(sc.standardized_name, f.shipping_carrier) AS carrier,
+        COALESCE(sc.carrier_type, 'Unknown') AS carrier_type
+    FROM {{ ref('stg_shopify__fulfillments') }} f
+    LEFT JOIN {{ ref('shipping_carriers') }} sc
+        ON LOWER(f.shipping_carrier) = LOWER(sc.raw_carrier_name)
+
+
+================================================================================
+5. SEED CONFIGURATION OPTIONS
+================================================================================
+
+You can configure seeds in dbt_project.yml:
+
+    seeds:
+      shopify_analytics:                    # Project name
+        +schema: seeds                      # BigQuery dataset for seeds
+        
+        # Specific seed configs:
+        country_codes:
+          +column_types:                    # Override auto-detected types
+            country_code: varchar(2)
+        
+        shipping_carriers:
+          +enabled: true                    # or false to skip it
+
+    CONFIGURATION OPTIONS:
+    
+    ┌───────────────────┬──────────────────────────────────────────┐
+    │ Config            │ What It Does                             │
+    ├───────────────────┼──────────────────────────────────────────┤
+    │ +schema           │ Which dataset to put seeds in            │
+    │ +enabled          │ true/false — skip loading this seed      │
+    │ +column_types     │ Override auto-detected column types      │
+    │ +quote_columns    │ true/false — quote column names          │
+    │ +tags             │ Tag seeds for selective running           │
+    │ +full_refresh     │ Always rebuild the table from scratch    │
+    └───────────────────┴──────────────────────────────────────────┘
+
+
+    COLUMN TYPES — Why You Might Need Them:
+    
+    Problem: dbt might auto-detect "01" as number 1 (losing the zero)
+    
+    Solution:
+    seeds:
+      shopify_analytics:
+        zip_codes:
+          +column_types:
+            zip: varchar(10)       # Keep "01234" as string, not 1234
+
+
+================================================================================
+6. TESTING SEEDS — schema.yml
+================================================================================
+
+Seeds can (and should) be tested just like models!
+
+You have two options:
+
+    OPTION A: Create a YAML file next to the models that use the seed
+    
+    OPTION B: Create a YAML file in the seeds/ folder
+
+EXAMPLE — seeds/schema.yml:
+
+    version: 2
+    
+    seeds:
+      - name: country_codes
+        description: ISO country code lookup table for order geography analysis
+        columns:
+          - name: country_code
+            description: Two-letter ISO country code (e.g., US, CA, UK)
+            tests:
+              - unique
+              - not_null
+          - name: country_name
+            description: Full country name
+            tests:
+              - not_null
+          - name: region
+            description: Geographic region (North America, Europe, Asia, etc.)
+            tests:
+              - not_null
+              - accepted_values:
+                  arguments:
+                    values:
+                      - 'North America'
+                      - 'Europe'
+                      - 'Asia'
+                      - 'South America'
+                      - 'Africa'
+                      - 'Oceania'
+      
+      - name: shipping_carriers
+        description: Carrier name standardization mapping
+        columns:
+          - name: raw_carrier_name
+            tests:
+              - unique
+              - not_null
+          - name: standardized_name
+            tests:
+              - not_null
+          - name: carrier_type
+            tests:
+              - accepted_values:
+                  arguments:
+                    values: ['Economy', 'Standard', 'Express']
+
+
+    RUN TESTS:
+    dbt test -s shipping_carriers
+    dbt test -s country_codes
+    
+    Or test everything: dbt test
+
+
+================================================================================
+7. USING SEEDS IN MODELS WITH ref()
+================================================================================
+
+Seeds are referenced EXACTLY like models — using ref():
+
+    {{ ref('seed_name') }}
+
+    The seed name = CSV file name without .csv extension.
+
+    EXAMPLE 1: Join seed data to enrich orders
+    ────────────────────────────────────────────
+    
+    SELECT
+        o.order_id,
+        o.total_amount,
+        o.customer_country_code,
+        cc.country_name,
+        cc.region
+    FROM {{ ref('stg_shopify__orders') }} o
+    LEFT JOIN {{ ref('country_codes') }} cc
+        ON o.customer_country_code = cc.country_code
+
+
+    EXAMPLE 2: Filter using a seed
+    ──────────────────────────────
+    Seed: seeds/excluded_emails.csv
+    
+    email
+    test@test.com
+    dev@internal.com
+    admin@jaycutler.com
+    
+    Model:
+    SELECT *
+    FROM {{ ref('stg_shopify__orders') }}
+    WHERE customer_email NOT IN (
+        SELECT email FROM {{ ref('excluded_emails') }}
+    )
+
+
+    EXAMPLE 3: Map values using a seed
+    ──────────────────────────────────
+    Seed: seeds/order_source_mapping.csv
+    
+    raw_source,clean_source,channel_type
+    TikTok,TikTok Shop,Social
+    web,Website,Direct
+    shopify_draft_order,Manual Order,Internal
+    pos,Point of Sale,In-Store
+    
+    Model:
+    SELECT
+        o.order_id,
+        COALESCE(m.clean_source, o.order_source) AS order_source,
+        COALESCE(m.channel_type, 'Other') AS channel_type
+    FROM {{ ref('stg_shopify__orders') }} o
+    LEFT JOIN {{ ref('order_source_mapping') }} m
+        ON o.order_source = m.raw_source
+
+
+    DAG DEPENDENCY:
+    Seeds appear in the DAG just like models!
+    
+    country_codes (seed) ─┐
+                          ├──► model_that_uses_them
+    stg_orders (model) ───┘
+
+
+================================================================================
+8. SEEDS vs SOURCES — THE KEY DIFFERENCE
+================================================================================
+
+    ┌─────────────────────────┬────────────────────────────────────────┐
+    │                         │ SEED                  │ SOURCE         │
+    ├─────────────────────────┼───────────────────────┼────────────────┤
+    │ Data lives in           │ CSV in your project   │ Already in BQ  │
+    │ Who creates it          │ You (manually)        │ ETL/sync tool  │
+    │ How it gets to BQ       │ `dbt seed` command    │ Already there  │
+    │ dbt function to use     │ ref('seed_name')      │ source('x','y')│
+    │ Best for                │ Small lookup tables   │ Raw data tables│
+    │ Update frequency        │ Rarely (manual edit)  │ Auto (pipeline)│
+    │ Size limit              │ < 1,000 rows ideal    │ Any size       │
+    │ Version controlled      │ Yes (it's in Git!)    │ No             │
+    │ Appears in DAG          │ Yes                   │ Yes            │
+    │ Can be tested           │ Yes                   │ Yes            │
+    │ Materialization         │ Always TABLE          │ N/A (external) │
+    └─────────────────────────┴───────────────────────┴────────────────┘
+
+    YOUR PROJECT:
+    
+    SOURCE: raw_shopify.orders (624 Shopify orders loaded via Python script)
+    → Referenced as: {{ source('shopify_raw', 'orders') }}
+    → Why source? Because it comes from Daton sync, auto-pipeline
+    
+    SEED: country_codes.csv (5 rows of country lookup data)
+    → Referenced as: {{ ref('country_codes') }}
+    → Why seed? Because YOU typed it, it's small, rarely changes
+
+    DECISION FLOWCHART:
+    
+    Is the data already in BigQuery? ──YES──► Use source()
+         │
+        NO
+         │
+    Is it < 1,000 rows? ──NO──► Load it via Python/ETL → Use source()
+         │
+        YES
+         │
+    Does it change frequently? ──YES──► Load via ETL → Use source()
+         │
+        NO
+         │
+    ──► Use a SEED! ✅
+
+
+================================================================================
+9. GENERAL EXAMPLE: COUNTRY CODES LOOKUP
+================================================================================
+
+This is the most classic seed example — mapping country codes to full names.
+
+    STEP 1: Create CSV
+    ──────────────────
+    seeds/country_codes.csv:
+    
+    country_code,country_name,region
+    US,United States,North America
+    CA,Canada,North America
+    MX,Mexico,North America
+    UK,United Kingdom,Europe
+    DE,Germany,Europe
+    FR,France,Europe
+    JP,Japan,Asia
+    AU,Australia,Oceania
+    BR,Brazil,South America
+
+    STEP 2: Load it
+    ──────────────
+    dbt seed -s country_codes
+    
+    Output: Created table `project.dataset.country_codes`
+
+    STEP 3: Use in a model
+    ─────────────────────
+    -- In dim_customers.sql or a geography model:
+    
+    WITH customers AS (
+        SELECT * FROM {{ ref('int_customers__order_history') }}
+    ),
+    
+    countries AS (
+        SELECT * FROM {{ ref('country_codes') }}
+    ),
+    
+    final AS (
+        SELECT
+            c.customer_id,
+            c.customer_name,
+            c.country_code,
+            co.country_name,
+            co.region,
+            c.lifetime_value
+        FROM customers c
+        LEFT JOIN countries co ON c.country_code = co.country_code
+    )
+    
+    SELECT * FROM final
+
+    RESULT:
+    ┌─────────────┬───────────────┬────────────┬───────────────┬────────────────┐
+    │ customer_id │ customer_name │ country_cd │ country_name  │ region         │
+    ├─────────────┼───────────────┼────────────┼───────────────┼────────────────┤
+    │ 001         │ Jason Andrews │ US         │ United States │ North America  │
+    │ 002         │ Saul Rico     │ US         │ United States │ North America  │
+    └─────────────┴───────────────┴────────────┴───────────────┴────────────────┘
+
+
+================================================================================
+10. SHOPIFY EXAMPLE: DISCOUNT CODE MAPPING
+================================================================================
+
+Your Shopify data has discount codes like "Platform & Seller" and "BUILD25".
+Let's create a seed to categorize them.
+
+    STEP 1: Create CSV
+    ──────────────────
+    seeds/discount_code_mapping.csv:
+    
+    discount_code,discount_category,discount_channel,is_platform_discount
+    Platform & Seller,Platform Discount,TikTok,true
+    BUILD25,Promotional,Website,false
+    WELCOME10,New Customer,Website,false
+    SUMMER20,Seasonal,All,false
+    VIP30,Loyalty,Email,false
+
+    STEP 2: Run `dbt seed`
+    ─────────────────────
+    dbt seed -s discount_code_mapping
+
+    STEP 3: Use in an intermediate model
+    ────────────────────────────────────
+    -- int_orders__with_discount_details.sql:
+    
+    WITH orders AS (
+        SELECT * FROM {{ ref('stg_shopify__orders') }}
+    ),
+    
+    discount_map AS (
+        SELECT * FROM {{ ref('discount_code_mapping') }}
+    ),
+    
+    enriched AS (
+        SELECT
+            o.*,
+            COALESCE(dm.discount_category, 'Unknown') AS discount_category,
+            COALESCE(dm.discount_channel, 'Unknown') AS discount_channel,
+            COALESCE(dm.is_platform_discount, false) AS is_platform_discount
+        FROM orders o
+        LEFT JOIN discount_map dm
+            ON o.discount_code = dm.discount_code
+    )
+    
+    SELECT * FROM enriched
+
+    NOW YOU CAN ANSWER:
+    "How much revenue came from TikTok platform discounts vs website promos?"
+
+
+================================================================================
+11. SHOPIFY EXAMPLE: SHIPPING CARRIER MAPPING
+================================================================================
+
+Your fulfillments data has various carrier names. Some need standardizing.
+
+    STEP 1: Create CSV
+    ──────────────────
+    seeds/shipping_carriers.csv:
+    
+    raw_carrier_name,standardized_name,carrier_type,is_domestic
+    DHL eCommerce,DHL,Economy,true
+    DHL express,DHL,Express,true
+    FedEx,FedEx,Ground,true
+    FedEx Ground,FedEx,Ground,true
+    FedEx Express,FedEx,Express,true
+    FedEx Home Delivery,FedEx,Ground,true
+    UPS,UPS,Ground,true
+    UPS Ground,UPS,Ground,true
+    UPS Next Day Air,UPS,Express,true
+    USPS,USPS,Standard,true
+    USPS Priority Mail,USPS,Express,true
+    Canada Post,Canada Post,Standard,false
+
+    STEP 2: Use in fulfillments model
+    ─────────────────────────────────
+    Currently your stg_shopify__fulfillments.sql has a CASE statement
+    for carrier standardization. With a seed, you could replace it:
+    
+    -- BEFORE (hardcoded CASE):
+    CASE
+        WHEN LOWER(shipping_carrier) LIKE '%fedex%' THEN 'FedEx'
+        WHEN LOWER(shipping_carrier) LIKE '%ups%' THEN 'UPS'
+        ELSE COALESCE(shipping_carrier, 'Unknown')
+    END AS shipping_carrier_standardized
+    
+    -- AFTER (seed-driven, more maintainable):
+    COALESCE(sc.standardized_name, f.shipping_carrier) AS shipping_carrier_standardized,
+    COALESCE(sc.carrier_type, 'Unknown') AS carrier_type
+    
+    ...FROM fulfillments f
+    LEFT JOIN {{ ref('shipping_carriers') }} sc
+        ON LOWER(f.shipping_carrier) = LOWER(sc.raw_carrier_name)
+
+    WHY IS THE SEED APPROACH BETTER?
+    - Adding a new carrier = add a CSV row (no SQL change!)
+    - Non-technical team can update the CSV
+    - Version controlled in Git
+    - Can be tested with YAML tests
+
+
+================================================================================
+12. ADVANCED: SEED COLUMN TYPES
+================================================================================
+
+By default, dbt auto-detects column types from the CSV data.
+
+    AUTO-DETECTION RULES:
+    - "hello" → STRING
+    - "123" → INTEGER
+    - "12.34" → FLOAT
+    - "true"/"false" → might detect as BOOLEAN or STRING
+    - "2026-01-21" → might detect as DATE or STRING
+
+    PROBLEM: Sometimes auto-detection is WRONG.
+    
+    Example CSV:
+    zip_code,population
+    01234,50000
+    
+    dbt might interpret zip_code as INTEGER → 1234 (loses leading zero!)
+
+    SOLUTION: Override column types in dbt_project.yml:
+    
+    seeds:
+      shopify_analytics:
+        zip_codes:
+          +column_types:
+            zip_code: varchar(10)      # Force it to be a string
+            population: integer         # Explicitly set as integer
+
+    ANOTHER SOLUTION: Quote values in CSV:
+    
+    "zip_code","population"
+    "01234","50000"
+    
+    This preserves leading zeros.
+
+
+================================================================================
+13. PRACTICAL EXERCISE: BUILD A SEED FOR YOUR PROJECT
+================================================================================
+
+TRY THIS: Create a product_categories seed.
+
+    STEP 1: Look at your line items data
+    ────────────────────────────────────
+    Your products are things like:
+    - "3 Pack Multi Flavor Carnitine"
+    - "Liquid L-Carnitine 3000"
+    - "Jay Cutler Signature Series Lifting Straps"
+    
+    They need CATEGORIES!
+
+    STEP 2: Create the CSV
+    ─────────────────────
+    seeds/product_categories.csv:
+    
+    product_keyword,category,subcategory
+    Carnitine,Supplements,Weight Management
+    Pre Workout,Supplements,Performance
+    Protein,Supplements,Protein
+    BCAA,Supplements,Amino Acids
+    Creatine,Supplements,Performance
+    Lifting Straps,Accessories,Lifting Gear
+    Shaker,Accessories,Bottles
+    T-Shirt,Apparel,Tops
+    Hoodie,Apparel,Outerwear
+    
+    STEP 3: Use it with LIKE matching
+    ──────────────────────────────────
+    
+    SELECT
+        p.product_id,
+        p.product_title,
+        COALESCE(pc.category, 'Uncategorized') AS category,
+        COALESCE(pc.subcategory, 'Other') AS subcategory
+    FROM {{ ref('dim_products') }} p
+    LEFT JOIN {{ ref('product_categories') }} pc
+        ON LOWER(p.product_title) LIKE CONCAT('%', LOWER(pc.product_keyword), '%')
+
+    STEP 4: Run it
+    ─────────────
+    dbt seed                    # Load the CSV
+    dbt run -s dim_products     # Rebuild the model (if you updated it)
+    dbt test                    # Verify everything
+
+
+================================================================================
+14. COMMON MISTAKES & BEST PRACTICES
+================================================================================
+
+    ❌ MISTAKE 1: Using seeds for large data
+       "Let me put 100,000 rows of customer data in a CSV"
+       ✅ FIX: Use ETL pipeline + source() for anything > 1,000 rows
+
+    ❌ MISTAKE 2: Forgetting to run `dbt seed`
+       You edited the CSV but the BQ table still has old data
+       ✅ FIX: Always run `dbt seed` after editing CSV files
+
+    ❌ MISTAKE 3: Using source() instead of ref() for seeds
+       SELECT * FROM {{ source('my_seed') }}
+       ✅ FIX: Seeds use ref(): {{ ref('country_codes') }}
+
+    ❌ MISTAKE 4: No tests on seeds
+       How do you know the CSV has no duplicate country codes?
+       ✅ FIX: Add schema.yml with unique + not_null tests
+
+    ❌ MISTAKE 5: Seeds with inconsistent formatting
+       Mixing cases, trailing spaces, inconsistent delimiters
+       ✅ FIX: Be precise with CSV data — trim spaces, consistent case
+
+    ❌ MISTAKE 6: Not version-controlling seed changes
+       Editing CSV without committing to Git
+       ✅ FIX: Git commit after every seed change — track history!
+
+
+    SEED BEST PRACTICES CHECKLIST:
+    ☐ Seed is < 1,000 rows
+    ☐ Data changes rarely (not daily)
+    ☐ CSV is clean (no trailing spaces, consistent format)
+    ☐ YAML tests exist (unique, not_null on key columns)
+    ☐ Seed is documented (description in YAML)
+    ☐ Column types overridden if auto-detection might fail
+    ☐ Committed to Git after every change
+
+
+================================================================================
+YOUR PROJECT'S SEED: country_codes.csv
+================================================================================
+
+You already have this seed in your project!
+
+    seeds/country_codes.csv:
+    ┌──────────────┬───────────────┬────────────────┐
+    │ country_code │ country_name  │ region         │
+    ├──────────────┼───────────────┼────────────────┤
+    │ US           │ United States │ North America  │
+    │ CA           │ Canada        │ North America  │
+    │ UK           │ United Kingdom│ Europe         │
+    │ DE           │ Germany       │ Europe         │
+    │ FR           │ France        │ Europe         │
+    └──────────────┴───────────────┴────────────────┘
+
+    TO LOAD IT:
+    dbt seed
+    
+    TO USE IT:
+    SELECT * FROM {{ ref('country_codes') }}
+    
+    This seed could be used to map customer shipping addresses
+    to regions for geographic revenue analysis!
+
+
+================================================================================
+QUICK REFERENCE — SEED COMMANDS
+================================================================================
+
+    dbt seed                         # Load ALL seeds
+    dbt seed -s country_codes        # Load ONE specific seed
+    dbt seed --full-refresh          # Drop and recreate all seed tables
+    dbt seed -s country_codes --full-refresh   # Full refresh one seed
+    dbt test -s country_codes        # Test a specific seed
+
+
+================================================================================
+NEXT: Read 04_jinja_templating.txt for Jinja loops and if statements
+================================================================================

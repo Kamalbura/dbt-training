@@ -1,0 +1,1268 @@
+================================================================================
+JINJA TEMPLATING IN dbt — THE COMPLETE GUIDE
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders (JayCutler.com)
+================================================================================
+
+TABLE OF CONTENTS:
+  1. What is Jinja?
+  2. The Three Jinja Delimiters ({{ }}, {% %}, {# #})
+  3. Variables — Storing and Using Values
+  4. If Statements — Conditional Logic
+  5. For Loops — Repeating SQL
+  6. Macros — Reusable Functions
+  7. Jinja Filters — Transform Values
+  8. Set — Defining Lists and Variables
+  9. Built-in dbt Jinja Functions
+  10. General Examples — From Simple to Complex
+  11. Shopify Examples — Real Usage in Your Project
+  12. Building a Real Macro for Your Project
+  13. Advanced: Generating SQL Dynamically
+  14. Common Mistakes & Debugging
+  15. Cheat Sheet
+
+
+================================================================================
+1. WHAT IS JINJA?
+================================================================================
+
+Jinja is a TEMPLATING LANGUAGE that lets you write dynamic SQL.
+
+    SIMPLE DEFINITION:
+    Jinja = Python-like code INSIDE your SQL files
+    
+    It runs BEFORE the SQL is sent to BigQuery.
+    dbt reads your file, processes all the Jinja parts,
+    produces pure SQL, then sends that to BigQuery.
+
+    ANALOGY — Mad Libs:
+    
+    Think of it like a Mad Libs game:
+    
+    Template:  "Hello, my name is _____. I have _____ orders."
+    
+    Jinja:     "Hello, my name is {{ customer_name }}. I have {{ order_count }} orders."
+    
+    Result:    "Hello, my name is Jason. I have 5 orders."
+
+    WITHOUT JINJA (you'd write this):
+    ─────────────────────────────────
+    SELECT * FROM `saras-bigquery.raw_shopify.orders`
+    
+    WITH JINJA (you write this instead):
+    ────────────────────────────────────
+    SELECT * FROM {{ source('shopify_raw', 'orders') }}
+    
+    dbt processes the Jinja → produces the same SQL.
+    But now it's portable, trackable, and dynamic!
+
+
+    THE COMPILATION PROCESS:
+    
+    YOUR FILE                    COMPILED SQL                   BIGQUERY
+    (Jinja + SQL)                (Pure SQL)                     (runs it)
+    
+    ┌──────────────┐            ┌──────────────────┐           ┌──────────┐
+    │ SELECT *     │  ──dbt──►  │ SELECT *         │  ──BQ──►  │ Results  │
+    │ FROM {{      │  compiles  │ FROM `saras-     │  executes │          │
+    │   ref('x')   │            │   bigquery.      │           │          │
+    │ }}           │            │   dataset.x`     │           │          │
+    └──────────────┘            └──────────────────┘           └──────────┘
+    
+    You can see compiled SQL in: target/compiled/shopify_analytics/models/...
+
+
+================================================================================
+2. THE THREE JINJA DELIMITERS
+================================================================================
+
+There are THREE types of Jinja blocks:
+
+    ╔═══════════════════╦═══════════════════════════════════════════════╗
+    ║ Delimiter         ║ Purpose                                       ║
+    ╠═══════════════════╬═══════════════════════════════════════════════╣
+    ║ {{ expression }}  ║ OUTPUT — prints a value into the SQL          ║
+    ║                   ║                                               ║
+    ║ {% statement %}   ║ LOGIC — runs code (if, for, set, macro)       ║
+    ║                   ║ Does NOT output anything by itself             ║
+    ║                   ║                                               ║
+    ║ {# comment #}     ║ COMMENT — ignored completely                  ║
+    ║                   ║ Not even in compiled SQL                       ║
+    ╚═══════════════════╩═══════════════════════════════════════════════╝
+
+
+    {{ }} — EXPRESSIONS (OUTPUT VALUES)
+    ────────────────────────────────────
+    Anything inside {{ }} gets PRINTED into the SQL.
+    
+    {{ ref('stg_shopify__orders') }}
+    → Outputs: `saras-bigquery.dbt_training_staging.stg_shopify__orders`
+    
+    {{ var('raw_database') }}
+    → Outputs: saras-bigquery
+    
+    {{ 2 + 3 }}
+    → Outputs: 5
+    
+    {{ "hello" ~ " world" }}
+    → Outputs: hello world     (~ is Jinja's string concatenation)
+
+
+    {% %} — STATEMENTS (LOGIC)
+    ──────────────────────────
+    Anything inside {% %} runs logic but doesn't print directly.
+    Used for: if, for, set, macro, call.
+    
+    {% set my_var = 42 %}
+    → Nothing printed, but my_var is now 42
+    → You access it later with {{ my_var }}
+    
+    {% if true %}
+      SELECT 1
+    {% endif %}
+    → Outputs: SELECT 1  (the SQL between the if blocks)
+    
+    {% for i in [1, 2, 3] %}
+      {{ i }}
+    {% endfor %}
+    → Outputs: 1  2  3
+
+
+    {# #} — COMMENTS
+    ─────────────────
+    Jinja comments are completely removed during compilation.
+    They DON'T appear in the compiled SQL.
+    
+    {# This is a Jinja comment - it won't appear anywhere #}
+    
+    vs SQL comments (which DO appear in compiled SQL):
+    -- This is a SQL comment - it appears in compiled SQL
+    
+    WHEN TO USE EACH:
+    - {# #} for notes about WHY you wrote certain Jinja code
+    - -- for notes about the SQL logic (data team sees these)
+
+
+================================================================================
+3. VARIABLES — STORING AND USING VALUES
+================================================================================
+
+Variables let you store values and reuse them.
+
+    ──────────────────────────────────────
+    METHOD 1: {% set %} — Local Variables
+    ──────────────────────────────────────
+    
+    {% set payment_methods = ['credit_card', 'paypal', 'bank_transfer'] %}
+    {% set min_order_amount = 10 %}
+    {% set schema_name = 'staging' %}
+    
+    Usage:
+    SELECT *
+    FROM orders
+    WHERE total_amount >= {{ min_order_amount }}
+    
+    Compiles to:
+    SELECT *
+    FROM orders
+    WHERE total_amount >= 10
+
+
+    ──────────────────────────────────────
+    METHOD 2: {{ var() }} — Project Variables
+    ──────────────────────────────────────
+    
+    These are defined in dbt_project.yml and are available EVERYWHERE.
+    
+    In dbt_project.yml:
+        vars:
+          raw_database: 'saras-bigquery'
+          raw_schema: 'raw_shopify'
+    
+    In any model:
+        SELECT * FROM `{{ var('raw_database') }}.{{ var('raw_schema') }}.orders`
+    
+    Compiles to:
+        SELECT * FROM `saras-bigquery.raw_shopify.orders`
+    
+    OVERRIDE AT RUNTIME:
+        dbt run --vars '{"raw_database": "prod-project"}'
+        → Now it uses 'prod-project' instead of 'saras-bigquery'!
+
+
+    ──────────────────────────────────────
+    VARIABLE TYPES:
+    ──────────────────────────────────────
+    
+    {% set my_string = 'hello' %}           → String
+    {% set my_number = 42 %}                → Integer
+    {% set my_float = 3.14 %}               → Float
+    {% set my_bool = true %}                → Boolean
+    {% set my_list = ['a', 'b', 'c'] %}     → List (array)
+    {% set my_dict = {'key': 'value'} %}    → Dictionary (object)
+    {% set my_none = none %}                → None/null
+
+
+    YOUR REAL EXAMPLE:
+    In _shopify__sources.yml, you use var():
+    
+    database: "{{ var('raw_database', 'your-gcp-project') }}"
+    schema: "{{ var('raw_schema', 'raw_shopify') }}"
+    
+    The second parameter is a DEFAULT VALUE:
+    - If raw_database is defined in dbt_project.yml → use it
+    - If NOT defined → fall back to 'your-gcp-project'
+
+
+================================================================================
+4. IF STATEMENTS — CONDITIONAL LOGIC
+================================================================================
+
+If statements let you include/exclude SQL based on conditions.
+
+    ──────────────────────
+    BASIC SYNTAX:
+    ──────────────────────
+    
+    {% if condition %}
+        SQL to include if TRUE
+    {% endif %}
+    
+    
+    {% if condition %}
+        SQL if TRUE
+    {% else %}
+        SQL if FALSE
+    {% endif %}
+    
+    
+    {% if condition_1 %}
+        SQL if condition_1 is TRUE
+    {% elif condition_2 %}
+        SQL if condition_2 is TRUE
+    {% else %}
+        SQL if nothing is TRUE
+    {% endif %}
+
+
+    ──────────────────────────────────
+    GENERAL EXAMPLE 1: Target-Based Logic
+    ──────────────────────────────────
+    
+    Different behavior for dev vs production:
+    
+    SELECT *
+    FROM {{ ref('stg_orders') }}
+    {% if target.name == 'dev' %}
+        WHERE order_date >= DATE_SUB(CURRENT_DATE(), INTERVAL 7 DAY)
+        {# In dev, only process last 7 days for faster builds #}
+    {% endif %}
+    
+    In DEV: Only last 7 days (fast)
+    In PROD: All data (no WHERE clause, full dataset)
+
+
+    ──────────────────────────────────
+    GENERAL EXAMPLE 2: Variable-Based Logic
+    ──────────────────────────────────
+    
+    {% set include_tax = true %}
+    
+    SELECT
+        order_id,
+        subtotal_amount
+        {% if include_tax %}
+        , tax_amount
+        , subtotal_amount + tax_amount AS total_with_tax
+        {% endif %}
+    FROM {{ ref('stg_orders') }}
+    
+    If include_tax = true:
+        SELECT order_id, subtotal_amount, tax_amount, subtotal_amount + tax_amount AS total_with_tax
+    
+    If include_tax = false:
+        SELECT order_id, subtotal_amount
+
+
+    ──────────────────────────────────
+    GENERAL EXAMPLE 3: Model Existence Check
+    ──────────────────────────────────
+    
+    {# Only join to discounts table if it exists #}
+    {% set has_discounts = var('has_discounts_table', false) %}
+    
+    SELECT
+        o.order_id,
+        o.total_amount
+        {% if has_discounts %}
+        , d.discount_code
+        , d.discount_type
+        {% endif %}
+    FROM {{ ref('stg_orders') }} o
+    {% if has_discounts %}
+    LEFT JOIN {{ ref('stg_discounts') }} d ON o.order_id = d.order_id
+    {% endif %}
+
+
+    ──────────────────────────────────
+    SHOPIFY EXAMPLE: Exclude Test Orders
+    ──────────────────────────────────
+    
+    {% set exclude_test_orders = var('exclude_test_orders', true) %}
+    
+    SELECT *
+    FROM {{ ref('stg_shopify__orders') }}
+    {% if exclude_test_orders %}
+    WHERE COALESCE(is_test_order, FALSE) = FALSE
+    {% endif %}
+    
+    Default: test orders are excluded.
+    Override: dbt run --vars '{"exclude_test_orders": false}'
+    → Now test orders are included!
+
+
+    ──────────────────────────────────
+    SHOPIFY EXAMPLE: Filter by Date Range
+    ──────────────────────────────────
+    
+    {% set start_date = var('analysis_start_date', '2026-01-01') %}
+    {% set end_date = var('analysis_end_date', '2026-12-31') %}
+    
+    SELECT *
+    FROM {{ ref('fct_orders') }}
+    WHERE order_date BETWEEN '{{ start_date }}' AND '{{ end_date }}'
+    
+    Default: Full year 2026
+    Override: dbt run --vars '{"analysis_start_date": "2026-01-18", "analysis_end_date": "2026-01-21"}'
+
+
+    ──────────────────────────────────
+    COMPARISON OPERATORS:
+    ──────────────────────────────────
+    
+    {% if x == 'value' %}     Equal to
+    {% if x != 'value' %}     Not equal to
+    {% if x > 10 %}           Greater than
+    {% if x < 10 %}           Less than
+    {% if x >= 10 %}          Greater than or equal
+    {% if x <= 10 %}          Less than or equal
+    {% if x is none %}        Is null/none
+    {% if x is not none %}    Is not null
+    {% if x in ['a', 'b'] %} In a list
+    {% if x and y %}          Both true
+    {% if x or y %}           Either true
+    {% if not x %}            Negate
+
+
+================================================================================
+5. FOR LOOPS — REPEATING SQL
+================================================================================
+
+For loops let you generate repetitive SQL automatically.
+
+    ──────────────────────
+    BASIC SYNTAX:
+    ──────────────────────
+    
+    {% for item in list %}
+        {{ item }}
+    {% endfor %}
+
+
+    ──────────────────────────────────
+    GENERAL EXAMPLE 1: Generate Multiple Columns
+    ──────────────────────────────────
+    
+    PROBLEM: You need to create columns for each payment method.
+    
+    WITHOUT JINJA (manual, repetitive):
+    
+    SELECT
+        order_id,
+        SUM(CASE WHEN payment_method = 'credit_card' THEN amount ELSE 0 END) AS credit_card_amount,
+        SUM(CASE WHEN payment_method = 'paypal' THEN amount ELSE 0 END) AS paypal_amount,
+        SUM(CASE WHEN payment_method = 'bank_transfer' THEN amount ELSE 0 END) AS bank_transfer_amount
+    FROM payments
+    GROUP BY order_id
+    
+    WITH JINJA (dynamic, DRY):
+    
+    {% set payment_methods = ['credit_card', 'paypal', 'bank_transfer'] %}
+    
+    SELECT
+        order_id
+        {% for method in payment_methods %}
+        , SUM(CASE WHEN payment_method = '{{ method }}' THEN amount ELSE 0 END)
+            AS {{ method }}_amount
+        {% endfor %}
+    FROM payments
+    GROUP BY order_id
+    
+    COMPILES TO (exact same thing, but you wrote less code):
+    
+    SELECT
+        order_id
+        , SUM(CASE WHEN payment_method = 'credit_card' THEN amount ELSE 0 END) AS credit_card_amount
+        , SUM(CASE WHEN payment_method = 'paypal' THEN amount ELSE 0 END) AS paypal_amount
+        , SUM(CASE WHEN payment_method = 'bank_transfer' THEN amount ELSE 0 END) AS bank_transfer_amount
+    FROM payments
+    GROUP BY order_id
+
+    WHY IS THE JINJA VERSION BETTER?
+    → To add 'apple_pay', just add it to the list: ['credit_card', 'paypal', 'bank_transfer', 'apple_pay']
+    → No need to copy-paste another CASE WHEN block!
+
+
+    ──────────────────────────────────
+    GENERAL EXAMPLE 2: UNION Multiple Tables
+    ──────────────────────────────────
+    
+    PROBLEM: You have monthly tables (orders_jan, orders_feb, orders_mar...)
+    and need to union them all.
+    
+    {% set months = ['jan', 'feb', 'mar', 'apr', 'may', 'jun',
+                     'jul', 'aug', 'sep', 'oct', 'nov', 'dec'] %}
+    
+    {% for month in months %}
+        SELECT * FROM {{ source('raw', 'orders_' ~ month) }}
+        {% if not loop.last %}
+        UNION ALL
+        {% endif %}
+    {% endfor %}
+    
+    COMPILES TO:
+    
+    SELECT * FROM `project.raw.orders_jan`
+    UNION ALL
+    SELECT * FROM `project.raw.orders_feb`
+    UNION ALL
+    SELECT * FROM `project.raw.orders_mar`
+    UNION ALL
+    ...
+    SELECT * FROM `project.raw.orders_dec`
+    
+    NOTE: loop.last is a special Jinja variable!
+    It's TRUE on the last iteration — so we DON'T add UNION ALL after the last SELECT.
+
+
+    ──────────────────────────────────
+    LOOP SPECIAL VARIABLES:
+    ──────────────────────────────────
+    
+    {% for item in items %}
+        {{ loop.index }}      → Current iteration (1, 2, 3...)
+        {{ loop.index0 }}     → Zero-based index (0, 1, 2...)
+        {{ loop.first }}      → TRUE on first iteration
+        {{ loop.last }}       → TRUE on last iteration
+        {{ loop.length }}     → Total number of items
+        {{ loop.revindex }}   → Iterations remaining (3, 2, 1)
+    {% endfor %}
+
+
+    ──────────────────────────────────
+    SHOPIFY EXAMPLE: Generate Window Functions
+    ──────────────────────────────────
+    
+    Instead of writing each window function manually, use a loop:
+    
+    {% set window_metrics = [
+        {'name': 'total_orders', 'func': 'COUNT(*)', 'frame': ''},
+        {'name': 'lifetime_value', 'func': 'SUM(total_amount)', 'frame': ''},
+        {'name': 'running_total', 'func': 'SUM(total_amount)', 'frame': 'ORDER BY order_created_at ROWS UNBOUNDED PRECEDING'},
+        {'name': 'avg_order_value', 'func': 'AVG(total_amount)', 'frame': ''}
+    ] %}
+    
+    SELECT
+        order_id,
+        customer_id,
+        total_amount,
+        order_created_at
+        {% for metric in window_metrics %}
+        , {{ metric.func }} OVER (
+            PARTITION BY customer_id
+            {{ metric.frame }}
+        ) AS customer_{{ metric.name }}
+        {% endfor %}
+    FROM {{ ref('stg_shopify__orders') }}
+
+
+    ──────────────────────────────────
+    SHOPIFY EXAMPLE: Multiple Status Flags
+    ──────────────────────────────────
+    
+    {% set statuses = ['paid', 'pending', 'refunded', 'voided'] %}
+    
+    SELECT
+        order_date,
+        COUNT(*) AS total_orders
+        {% for status in statuses %}
+        , COUNTIF(payment_status = '{{ status }}') AS {{ status }}_count
+        {% endfor %}
+    FROM {{ ref('fct_orders') }}
+    GROUP BY order_date
+    
+    COMPILES TO:
+    
+    SELECT
+        order_date,
+        COUNT(*) AS total_orders
+        , COUNTIF(payment_status = 'paid') AS paid_count
+        , COUNTIF(payment_status = 'pending') AS pending_count
+        , COUNTIF(payment_status = 'refunded') AS refunded_count
+        , COUNTIF(payment_status = 'voided') AS voided_count
+    FROM `saras-bigquery.dbt_training_marts.fct_orders`
+    GROUP BY order_date
+
+
+    ──────────────────────────────────
+    COMBINING IF + FOR:
+    ──────────────────────────────────
+    
+    {% set columns = ['subtotal_amount', 'discount_amount', 'tax_amount', 'total_amount'] %}
+    {% set include_nulls = false %}
+    
+    SELECT
+        order_id
+        {% for col in columns %}
+            {% if include_nulls %}
+        , {{ col }}
+            {% else %}
+        , COALESCE({{ col }}, 0) AS {{ col }}
+            {% endif %}
+        {% endfor %}
+    FROM {{ ref('stg_shopify__orders') }}
+
+
+================================================================================
+6. MACROS — REUSABLE JINJA FUNCTIONS
+================================================================================
+
+A MACRO is a reusable block of Jinja code, like a function.
+
+    ANALOGY:
+    - A model is a reusable SQL file
+    - A macro is a reusable Jinja SNIPPET that generates SQL
+    
+    Models = full tables/views
+    Macros = reusable SQL fragments you call from within models
+
+    ──────────────────────
+    BASIC SYNTAX:
+    ──────────────────────
+    
+    {% macro macro_name(parameter1, parameter2) %}
+        SQL/Jinja code here
+    {% endmacro %}
+    
+    CALLING A MACRO:
+    {{ macro_name('value1', 'value2') }}
+
+
+    ──────────────────────────────────
+    WHERE DO MACROS LIVE?
+    ──────────────────────────────────
+    
+    macros/ folder in your project:
+    
+    macros/
+    ├── cents_to_dollars.sql
+    ├── generate_schema_name.sql
+    ├── clean_string.sql
+    └── pivot_payments.sql
+    
+    Each .sql file can contain one or more macros.
+
+
+    ──────────────────────────────────
+    GENERAL EXAMPLE 1: Simple Conversion
+    ──────────────────────────────────
+    
+    File: macros/cents_to_dollars.sql
+    
+    {% macro cents_to_dollars(column_name) %}
+        ROUND({{ column_name }} / 100.0, 2)
+    {% endmacro %}
+    
+    Usage in a model:
+    
+    SELECT
+        order_id,
+        {{ cents_to_dollars('amount_cents') }} AS amount_dollars
+    FROM raw_payments
+    
+    COMPILES TO:
+    
+    SELECT
+        order_id,
+        ROUND(amount_cents / 100.0, 2) AS amount_dollars
+    FROM raw_payments
+
+
+    ──────────────────────────────────
+    GENERAL EXAMPLE 2: Clean String Function
+    ──────────────────────────────────
+    
+    File: macros/clean_string.sql
+    
+    {% macro clean_string(column_name) %}
+        LOWER(TRIM({{ column_name }}))
+    {% endmacro %}
+    
+    Usage:
+    
+    SELECT
+        {{ clean_string('customer_email') }} AS email,
+        {{ clean_string('customer_name') }} AS name
+    FROM raw_customers
+    
+    COMPILES TO:
+    
+    SELECT
+        LOWER(TRIM(customer_email)) AS email,
+        LOWER(TRIM(customer_name)) AS name
+    FROM raw_customers
+
+    WHY USE A MACRO?
+    → If you decide to also add NULLIF(x, '') later,
+      you change it ONCE in the macro, and ALL models get the update!
+
+
+    ──────────────────────────────────
+    GENERAL EXAMPLE 3: Macro with Default Parameters
+    ──────────────────────────────────
+    
+    {% macro limit_data(date_column, days_back=30) %}
+        WHERE {{ date_column }} >= DATE_SUB(CURRENT_DATE(), INTERVAL {{ days_back }} DAY)
+    {% endmacro %}
+    
+    Usage:
+    
+    SELECT * FROM {{ ref('stg_orders') }}
+    {{ limit_data('order_created_at') }}           → Last 30 days (default)
+    
+    SELECT * FROM {{ ref('stg_orders') }}
+    {{ limit_data('order_created_at', 7) }}        → Last 7 days
+    
+    SELECT * FROM {{ ref('stg_orders') }}
+    {{ limit_data('order_created_at', 365) }}      → Last 365 days
+
+
+    ──────────────────────────────────
+    SHOPIFY EXAMPLE: Macro for Safe Division
+    ──────────────────────────────────
+    
+    File: macros/safe_divide.sql
+    
+    {% macro safe_divide(numerator, denominator, default=0) %}
+        CASE
+            WHEN {{ denominator }} = 0 OR {{ denominator }} IS NULL
+            THEN {{ default }}
+            ELSE {{ numerator }} / {{ denominator }}
+        END
+    {% endmacro %}
+    
+    Usage in your models:
+    
+    SELECT
+        order_id,
+        {{ safe_divide('discount_amount', 'subtotal_amount') }} AS discount_rate,
+        {{ safe_divide('total_amount', 'line_item_count', 'NULL') }} AS avg_item_price
+    FROM {{ ref('int_orders__enriched') }}
+
+    Note: BigQuery actually has SAFE_DIVIDE() built in, but this shows
+    how macros work on any database!
+
+
+    ──────────────────────────────────
+    SHOPIFY EXAMPLE: Macro for Deduplication
+    ──────────────────────────────────
+    
+    File: macros/deduplicate.sql
+    
+    {% macro deduplicate(relation, partition_by, order_by) %}
+    
+        WITH deduped AS (
+            SELECT
+                *,
+                ROW_NUMBER() OVER (
+                    PARTITION BY {{ partition_by }}
+                    ORDER BY {{ order_by }}
+                ) AS _dedup_row_num
+            FROM {{ relation }}
+        )
+        
+        SELECT * EXCEPT(_dedup_row_num)
+        FROM deduped
+        WHERE _dedup_row_num = 1
+    
+    {% endmacro %}
+    
+    Usage in staging models:
+    
+    {{ deduplicate(
+        relation=ref('stg_raw_orders'),
+        partition_by='order_id',
+        order_by='synced_at DESC, updated_at DESC'
+    ) }}
+    
+    This replaces 15+ lines of dedup SQL with ONE macro call!
+    And if you need dedup in 5 models, the macro ensures consistency.
+
+
+    ──────────────────────────────────
+    SHOPIFY EXAMPLE: Macro for Pivot
+    ──────────────────────────────────
+    
+    File: macros/pivot_order_sources.sql
+    
+    {% macro pivot_order_sources(sources_list) %}
+        {% for source in sources_list %}
+        , COUNTIF(order_source = '{{ source }}') AS {{ source | lower | replace(' ', '_') }}_orders
+        , SUM(CASE WHEN order_source = '{{ source }}' THEN total_amount ELSE 0 END)
+            AS {{ source | lower | replace(' ', '_') }}_revenue
+        {% endfor %}
+    {% endmacro %}
+    
+    Usage:
+    
+    SELECT
+        order_date
+        {{ pivot_order_sources(['TikTok', 'web']) }}
+    FROM {{ ref('fct_orders') }}
+    GROUP BY order_date
+    
+    COMPILES TO:
+    
+    SELECT
+        order_date
+        , COUNTIF(order_source = 'TikTok') AS tiktok_orders
+        , SUM(CASE WHEN order_source = 'TikTok' THEN total_amount ELSE 0 END) AS tiktok_revenue
+        , COUNTIF(order_source = 'web') AS web_orders
+        , SUM(CASE WHEN order_source = 'web' THEN total_amount ELSE 0 END) AS web_revenue
+    FROM `saras-bigquery.dbt_training_marts.fct_orders`
+    GROUP BY order_date
+
+
+================================================================================
+7. JINJA FILTERS — TRANSFORM VALUES
+================================================================================
+
+Filters modify values using the pipe (|) syntax:
+
+    {{ value | filter }}
+
+    COMMON FILTERS:
+
+    ┌─────────────────────┬────────────────────────────┬───────────────────┐
+    │ Filter              │ What It Does               │ Example           │
+    ├─────────────────────┼────────────────────────────┼───────────────────┤
+    │ lower               │ Lowercase                  │ "ABC" → "abc"     │
+    │ upper               │ Uppercase                  │ "abc" → "ABC"     │
+    │ title               │ Title Case                 │ "hello" → "Hello" │
+    │ trim                │ Remove whitespace          │ " hi " → "hi"    │
+    │ replace(old, new)   │ Replace text               │ "a-b" → "a_b"    │
+    │ length              │ Count elements             │ [1,2,3] → 3      │
+    │ join(', ')          │ Join list with delimiter    │ [a,b] → "a, b"  │
+    │ default(val)        │ Fallback if undefined       │ x → "default"    │
+    │ int                 │ Convert to integer          │ "42" → 42        │
+    │ float               │ Convert to float            │ "3.14" → 3.14    │
+    │ string              │ Convert to string           │ 42 → "42"        │
+    │ list                │ Convert to list             │                   │
+    └─────────────────────┴────────────────────────────┴───────────────────┘
+
+    EXAMPLES:
+    
+    {% set columns = ['order_id', 'customer_id', 'total_amount'] %}
+    {{ columns | join(', ') }}
+    → order_id, customer_id, total_amount
+    
+    {% set table_name = 'My Table Name' %}
+    {{ table_name | lower | replace(' ', '_') }}
+    → my_table_name
+    
+    {{ var('raw_database', 'default-project') | upper }}
+    → SARAS-BIGQUERY
+
+
+================================================================================
+8. SET — DEFINING LISTS AND VARIABLES
+================================================================================
+
+{% set %} creates variables that last for the current file.
+
+    ──────────────────────────────────
+    STRINGS:
+    ──────────────────────────────────
+    {% set database_name = 'saras-bigquery' %}
+    {% set greeting = 'Hello, ' ~ 'World' %}     {# ~ is concatenation #}
+    
+    ──────────────────────────────────
+    NUMBERS:
+    ──────────────────────────────────
+    {% set min_amount = 10 %}
+    {% set tax_rate = 0.06 %}
+    
+    ──────────────────────────────────
+    LISTS (ARRAYS):
+    ──────────────────────────────────
+    {% set payment_methods = ['credit_card', 'paypal', 'apple_pay'] %}
+    {% set years = [2024, 2025, 2026] %}
+    {% set sources = ['TikTok', 'web', 'pos'] %}
+    
+    ──────────────────────────────────
+    DICTIONARIES (OBJECTS):
+    ──────────────────────────────────
+    {% set config = {
+        'database': 'saras-bigquery',
+        'schema': 'raw_shopify',
+        'table': 'orders'
+    } %}
+    
+    Usage: {{ config.database }}  → saras-bigquery
+    
+    ──────────────────────────────────
+    LIST OF DICTIONARIES:
+    ──────────────────────────────────
+    {% set columns = [
+        {'name': 'order_id', 'type': 'STRING', 'test': 'unique'},
+        {'name': 'total_amount', 'type': 'FLOAT64', 'test': 'not_null'},
+        {'name': 'customer_id', 'type': 'STRING', 'test': 'not_null'}
+    ] %}
+    
+    {% for col in columns %}
+        CAST({{ col.name }} AS {{ col.type }}) AS {{ col.name }}
+        {% if not loop.last %},{% endif %}
+    {% endfor %}
+    
+    COMPILES TO:
+    CAST(order_id AS STRING) AS order_id,
+    CAST(total_amount AS FLOAT64) AS total_amount,
+    CAST(customer_id AS STRING) AS customer_id
+
+
+================================================================================
+9. BUILT-IN dbt JINJA FUNCTIONS
+================================================================================
+
+dbt provides special Jinja functions beyond standard Jinja:
+
+    ┌──────────────────────┬──────────────────────────────────────────┐
+    │ Function             │ What It Does                             │
+    ├──────────────────────┼──────────────────────────────────────────┤
+    │ ref('model_name')    │ Reference another model                  │
+    │ source('name','tbl') │ Reference a source table                 │
+    │ var('name', default) │ Get a project variable                   │
+    │ config(...)          │ Set model configuration                  │
+    │ target.name          │ Current target (dev, prod)               │
+    │ target.database      │ Current database/project                 │
+    │ target.schema        │ Current default schema                   │
+    │ this                 │ Current model's relation                 │
+    │ run_started_at       │ Timestamp when dbt started               │
+    │ invocation_id        │ Unique ID for this dbt run               │
+    │ log(msg, info=true)  │ Print a message during compilation       │
+    │ exceptions.raise_compiler_error() │ Throw an error              │
+    └──────────────────────┴──────────────────────────────────────────┘
+
+    SHOPIFY EXAMPLES:
+    
+    -- Add metadata to every table:
+    SELECT
+        *,
+        '{{ invocation_id }}' AS _dbt_run_id,
+        TIMESTAMP('{{ run_started_at }}') AS _dbt_run_started_at
+    FROM {{ ref('stg_shopify__orders') }}
+    
+    -- Environment-specific logic:
+    {% if target.name == 'dev' %}
+        {# Only process recent data in development #}
+        WHERE order_date >= '2026-01-18'
+    {% endif %}
+
+    -- Error checking:
+    {% if var('raw_database', none) is none %}
+        {{ exceptions.raise_compiler_error("raw_database variable is required!") }}
+    {% endif %}
+
+
+================================================================================
+10. GENERAL EXAMPLES — FROM SIMPLE TO COMPLEX
+================================================================================
+
+EXAMPLE A: Simple Variable Substitution
+────────────────────────────────────────
+
+{% set days_lookback = 30 %}
+
+SELECT
+    customer_id,
+    COUNT(*) AS recent_orders
+FROM {{ ref('fct_orders') }}
+WHERE order_date >= DATE_SUB(CURRENT_DATE(), INTERVAL {{ days_lookback }} DAY)
+GROUP BY customer_id
+
+
+EXAMPLE B: Loop to Build UNION
+──────────────────────────────
+
+{% set schemas = ['shopify_us', 'shopify_ca', 'shopify_uk'] %}
+
+{% for schema in schemas %}
+    SELECT
+        '{{ schema }}' AS data_source,
+        *
+    FROM {{ source(schema, 'orders') }}
+    {% if not loop.last %} UNION ALL {% endif %}
+{% endfor %}
+
+
+EXAMPLE C: Conditional Aggregation
+───────────────────────────────────
+
+{% set aggregate_daily = var('aggregate_daily', true) %}
+
+SELECT
+    {% if aggregate_daily %}
+    DATE(order_created_at) AS order_date,
+    COUNT(*) AS order_count,
+    SUM(total_amount) AS revenue
+    {% else %}
+    order_id,
+    order_created_at,
+    total_amount
+    {% endif %}
+FROM {{ ref('stg_orders') }}
+{% if aggregate_daily %}
+GROUP BY DATE(order_created_at)
+{% endif %}
+
+
+EXAMPLE D: Macro + Loop + If Together
+──────────────────────────────────────
+
+{% macro generate_status_columns(statuses, amount_col='total_amount') %}
+    {% for status in statuses %}
+    , COUNTIF(payment_status = '{{ status }}') AS {{ status }}_orders
+    , SUM(CASE WHEN payment_status = '{{ status }}' THEN {{ amount_col }} ELSE 0 END) AS {{ status }}_revenue
+    {% if status == 'refunded' %}
+    , SUM(CASE WHEN payment_status = '{{ status }}' THEN {{ amount_col }} ELSE 0 END) * -1 AS {{ status }}_loss
+    {% endif %}
+    {% endfor %}
+{% endmacro %}
+
+Usage:
+SELECT
+    order_date
+    {{ generate_status_columns(['paid', 'pending', 'refunded']) }}
+FROM {{ ref('fct_orders') }}
+GROUP BY order_date
+
+
+================================================================================
+11. SHOPIFY EXAMPLES — REAL USAGE IN YOUR PROJECT
+================================================================================
+
+Let's find EVERY place Jinja is already used in your project:
+
+    ┌────────────────────────────────────────────────────────────────────┐
+    │ FILE                           │ JINJA USED                       │
+    ├────────────────────────────────┼──────────────────────────────────┤
+    │ stg_shopify__orders.sql        │ {{ config(materialized='view')}} │
+    │                                │ {{ source('shopify_raw','orders')}}│
+    │                                │                                  │
+    │ stg_shopify__order_line_items  │ {{ config(materialized='view')}} │
+    │                                │ {{ source('shopify_raw','orders')}}│
+    │                                │                                  │
+    │ stg_shopify__fulfillments      │ {{ config(materialized='view')}} │
+    │                                │ {{ source('shopify_raw','orders')}}│
+    │                                │                                  │
+    │ int_orders__enriched           │ {{ config(materialized='view')}} │
+    │                                │ {{ ref('stg_shopify__orders') }} │
+    │                                │ {{ ref('stg_shopify__order_line_items') }}│
+    │                                │ {{ ref('stg_shopify__fulfillments') }}    │
+    │                                │                                  │
+    │ int_customers__order_history   │ {{ config(materialized='view')}} │
+    │                                │ {{ ref('stg_shopify__orders') }} │
+    │                                │                                  │
+    │ fct_orders                     │ {{ config(materialized='table',  │
+    │                                │   tags=['core','daily']) }}       │
+    │                                │ {{ ref('int_orders__enriched') }}│
+    │                                │                                  │
+    │ fct_daily_revenue              │ {{ config(materialized='table')}}│
+    │                                │ {{ ref('fct_orders') }}          │
+    │                                │                                  │
+    │ dim_customers                  │ {{ config(materialized='table')}}│
+    │                                │ {{ ref('int_customers__..') }}   │
+    │                                │                                  │
+    │ dim_products                   │ {{ config(materialized='table')}}│
+    │                                │ {{ ref('stg_..line_items') }}    │
+    │                                │                                  │
+    │ _shopify__sources.yml          │ {{ var('raw_database') }}        │
+    │                                │ {{ var('raw_schema') }}          │
+    └────────────────────────────────┴──────────────────────────────────┘
+
+    Currently you use: config(), source(), ref(), var()
+    
+    NOW you can ADD: if, for, set, macros!
+
+
+================================================================================
+12. BUILDING A REAL MACRO FOR YOUR PROJECT
+================================================================================
+
+Let's build TWO real macros you can add to your project:
+
+    ──────────────────────────────────
+    MACRO 1: generate_surrogate_key
+    ──────────────────────────────────
+    Purpose: Create a unique hash key from multiple columns
+    
+    File: macros/generate_surrogate_key.sql
+    
+    {% macro generate_surrogate_key(columns) %}
+        TO_HEX(MD5(CONCAT(
+            {% for col in columns %}
+                COALESCE(CAST({{ col }} AS STRING), '_null_')
+                {% if not loop.last %}, '|', {% endif %}
+            {% endfor %}
+        )))
+    {% endmacro %}
+    
+    Usage:
+    SELECT
+        {{ generate_surrogate_key(['order_id', 'line_item_id']) }} AS surrogate_key,
+        order_id,
+        line_item_id
+    FROM {{ ref('stg_shopify__order_line_items') }}
+    
+    COMPILES TO:
+    SELECT
+        TO_HEX(MD5(CONCAT(
+            COALESCE(CAST(order_id AS STRING), '_null_'), '|',
+            COALESCE(CAST(line_item_id AS STRING), '_null_')
+        ))) AS surrogate_key,
+        order_id,
+        line_item_id
+    FROM ...
+
+
+    ──────────────────────────────────
+    MACRO 2: date_spine (generate date range)
+    ──────────────────────────────────
+    Purpose: Create a table with one row per day in a date range
+    
+    File: macros/date_spine.sql
+    
+    {% macro date_spine(start_date, end_date) %}
+        SELECT
+            date_day
+        FROM UNNEST(
+            GENERATE_DATE_ARRAY(
+                DATE('{{ start_date }}'),
+                DATE('{{ end_date }}')
+            )
+        ) AS date_day
+    {% endmacro %}
+    
+    Usage in a dim_dates model:
+    
+    {{ date_spine('2026-01-01', '2026-12-31') }}
+    
+    COMPILES TO:
+    SELECT date_day
+    FROM UNNEST(GENERATE_DATE_ARRAY(DATE('2026-01-01'), DATE('2026-12-31'))) AS date_day
+    
+    → Creates 365 rows, one for each day!
+
+
+================================================================================
+13. ADVANCED: GENERATING SQL DYNAMICALLY
+================================================================================
+
+The real power of Jinja: generate entire models dynamically.
+
+    ──────────────────────────────────
+    EXAMPLE: Dynamically create aggregation columns
+    ──────────────────────────────────
+    
+    {% set metrics = [
+        {'column': 'total_amount', 'aggs': ['SUM', 'AVG', 'MIN', 'MAX']},
+        {'column': 'line_item_count', 'aggs': ['SUM', 'AVG']},
+        {'column': 'discount_amount', 'aggs': ['SUM']}
+    ] %}
+    
+    SELECT
+        customer_id
+        {% for metric in metrics %}
+            {% for agg in metric.aggs %}
+        , {{ agg }}({{ metric.column }}) AS {{ agg | lower }}_{{ metric.column }}
+            {% endfor %}
+        {% endfor %}
+    FROM {{ ref('fct_orders') }}
+    GROUP BY customer_id
+    
+    COMPILES TO:
+    
+    SELECT
+        customer_id
+        , SUM(total_amount) AS sum_total_amount
+        , AVG(total_amount) AS avg_total_amount
+        , MIN(total_amount) AS min_total_amount
+        , MAX(total_amount) AS max_total_amount
+        , SUM(line_item_count) AS sum_line_item_count
+        , AVG(line_item_count) AS avg_line_item_count
+        , SUM(discount_amount) AS sum_discount_amount
+    FROM `saras-bigquery.dbt_training_marts.fct_orders`
+    GROUP BY customer_id
+
+    That's 8 aggregation columns generated from 4 lines of Jinja config!
+
+
+================================================================================
+14. COMMON MISTAKES & DEBUGGING
+================================================================================
+
+    ❌ MISTAKE 1: Missing {% endif %} or {% endfor %}
+    ─────────────────────────────────────────────────
+    {% if x %}
+        SELECT 1
+    
+    ERROR: "Unexpected end of template"
+    
+    ✅ FIX: Always close blocks:
+    {% if x %}
+        SELECT 1
+    {% endif %}
+
+
+    ❌ MISTAKE 2: Printing vs Logic confusion
+    ─────────────────────────────────────────
+    {{ set my_var = 42 }}        ← WRONG ({{ }} prints, doesn't run logic)
+    {% set my_var = 42 %}        ← CORRECT ({% %} runs logic)
+    
+    {% ref('model') %}           ← WRONG ({% %} doesn't print)
+    {{ ref('model') }}           ← CORRECT ({{ }} prints the result)
+
+
+    ❌ MISTAKE 3: Trailing commas in loops
+    ────────────────────────────────────
+    {% for col in ['a', 'b', 'c'] %}
+        {{ col }},
+    {% endfor %}
+    → a, b, c,     ← Extra comma after 'c'!
+    
+    ✅ FIX: Use loop.last:
+    {% for col in ['a', 'b', 'c'] %}
+        {{ col }}{% if not loop.last %},{% endif %}
+    {% endfor %}
+    → a, b, c      ← No trailing comma!
+
+
+    ❌ MISTAKE 4: String vs Number in comparisons
+    ──────────────────────────────────────────────
+    {% set amount = '10' %}
+    {% if amount > 5 %}         ← ERROR: comparing string '10' to number 5
+    
+    ✅ FIX: Use proper types:
+    {% set amount = 10 %}
+    {% if amount > 5 %}         ← Works!
+
+
+    DEBUGGING TIPS:
+    
+    1. Use `dbt compile` to see compiled SQL without running it
+       → Check target/compiled/shopify_analytics/models/...
+    
+    2. Use {{ log("Debug: " ~ my_var, info=true) }} to print during compilation
+    
+    3. Start simple — get the Jinja working with hardcoded values first,
+       then make it dynamic
+    
+    4. Use Jinja comments to temporarily disable sections:
+       {# {% for x in items %} ... {% endfor %} #}
+
+
+================================================================================
+15. CHEAT SHEET
+================================================================================
+
+    ┌─────────────────────────────────────────────────────────────────┐
+    │ JINJA QUICK REFERENCE                                          │
+    ├─────────────────────────────────────────────────────────────────┤
+    │                                                                 │
+    │ PRINT VALUE:     {{ expression }}                               │
+    │ LOGIC:           {% statement %}                                │
+    │ COMMENT:         {# comment #}                                  │
+    │                                                                 │
+    │ SET VARIABLE:    {% set x = 42 %}                               │
+    │ USE VARIABLE:    {{ x }}                                        │
+    │ PROJECT VAR:     {{ var('name', 'default') }}                   │
+    │                                                                 │
+    │ IF/ELSE:         {% if x > 5 %}                                │
+    │                      ...                                       │
+    │                  {% elif x > 0 %}                               │
+    │                      ...                                       │
+    │                  {% else %}                                      │
+    │                      ...                                       │
+    │                  {% endif %}                                     │
+    │                                                                 │
+    │ FOR LOOP:        {% for item in items %}                        │
+    │                      {{ item }}                                │
+    │                  {% endfor %}                                    │
+    │                                                                 │
+    │ LOOP VARS:       {{ loop.index }}  {{ loop.first }}             │
+    │                  {{ loop.last }}   {{ loop.length }}            │
+    │                                                                 │
+    │ MACRO:           {% macro name(param) %}                        │
+    │                      SQL with {{ param }}                      │
+    │                  {% endmacro %}                                  │
+    │ CALL MACRO:      {{ name('value') }}                            │
+    │                                                                 │
+    │ CONCAT:          {{ 'hello' ~ ' ' ~ 'world' }}                 │
+    │ FILTER:          {{ value | lower }}                             │
+    │                  {{ value | upper }}                             │
+    │                  {{ list | join(', ') }}                         │
+    │                  {{ value | replace('a', 'b') }}                │
+    │                  {{ value | default('fallback') }}               │
+    │                                                                 │
+    │ dbt FUNCTIONS:   {{ ref('model_name') }}                        │
+    │                  {{ source('name', 'table') }}                  │
+    │                  {{ config(materialized='table') }}              │
+    │                  {{ target.name }}                               │
+    │                  {{ this }}                                     │
+    │                  {{ run_started_at }}                            │
+    │                                                                 │
+    │ OPERATORS:       ==  !=  >  <  >=  <=                          │
+    │                  and  or  not                                   │
+    │                  is none  is not none                           │
+    │                  in  not in                                      │
+    │                                                                 │
+    └─────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+SUMMARY
+================================================================================
+
+    Jinja gives you PROGRAMMING POWER inside SQL:
+    
+    1. {{ }}   → Print values (ref, source, variables)
+    2. {% %}   → Logic (if, for, set, macro)
+    3. {# #}   → Comments (invisible in output)
+    
+    START WITH:
+    - {{ ref() }} and {{ source() }} — you already use these!
+    - {% set %} — define variables to avoid repetition
+    - {% if %} — conditional SQL based on environment
+    - {% for %} — generate repetitive SQL automatically
+    - {% macro %} — create reusable functions
+    
+    REMEMBER:
+    - Jinja runs at COMPILE time (before SQL hits BigQuery)
+    - Use `dbt compile` to see what Jinja generates
+    - Start simple, add complexity gradually
+
+
+================================================================================
+END OF JINJA TUTORIAL
+================================================================================

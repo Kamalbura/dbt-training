@@ -42,6 +42,8 @@ unnested AS (
         CAST(source.id AS STRING) AS order_id,
         source.order_number,
         CAST(source.created_at AS TIMESTAMP) AS order_created_at,
+        TIMESTAMP_MILLIS(CAST(source._daton_batch_runtime AS INT64)) AS synced_at,
+        source._daton_batch_id,
         
         -- Unnest the line_items array
         -- Each 'line_item' is now a single STRUCT (object)
@@ -59,6 +61,10 @@ renamed AS (
         -- Composite primary key (order_id + line_item_id)
         order_id,
         CAST(line_item.id AS STRING) AS line_item_id,
+
+        -- Sync metadata
+        synced_at,
+        _daton_batch_id,
         
         -- Order context
         order_number,
@@ -114,7 +120,7 @@ deduplicated AS (
         *,
         ROW_NUMBER() OVER (
             PARTITION BY order_id, line_item_id
-            ORDER BY order_created_at DESC
+            ORDER BY synced_at DESC, order_created_at DESC
         ) AS _dedup_row_num
     FROM renamed
 ),

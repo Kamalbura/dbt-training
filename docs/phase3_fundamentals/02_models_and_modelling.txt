@@ -1,0 +1,1003 @@
+================================================================================
+dbt MODELS & MODELLING — THE COMPLETE DEEP DIVE
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders (JayCutler.com)
+================================================================================
+
+TABLE OF CONTENTS:
+  1. What is a "Model" in dbt?
+  2. Creating Your First Model (Step by Step)
+  3. Model Naming Conventions
+  4. Model Configuration ({{ config() }})
+  5. CTE Pattern (Common Table Expressions)
+  6. The Three-Layer Architecture in Practice
+  7. Staging Models — Deep Dive
+  8. Intermediate Models — Deep Dive
+  9. Mart Models — Fact Tables
+  10. Mart Models — Dimension Tables
+  11. Model Dependencies and ref()
+  12. YAML Files — Documentation & Tests
+  13. General Example: E-Commerce from Scratch
+  14. Your Shopify Example: Full Walkthrough
+  15. Common Mistakes & Best Practices
+
+
+================================================================================
+1. WHAT IS A "MODEL" IN dbt?
+================================================================================
+
+A model is a .sql file containing a single SELECT statement.
+
+    THAT'S IT.
+
+    No CREATE TABLE.
+    No INSERT INTO.
+    No DROP IF EXISTS.
+    
+    Just a SELECT.
+
+    dbt takes your SELECT and wraps it:
+    
+    YOUR FILE (stg_orders.sql):
+    ──────────────────────────
+    SELECT id, name, price FROM raw.orders
+    
+    WHAT dbt ACTUALLY RUNS IN BIGQUERY:
+    ───────────────────────────────────
+    CREATE OR REPLACE VIEW `project.dataset.stg_orders` AS (
+      SELECT id, name, price FROM raw.orders
+    )
+
+    Or if materialized='table':
+    CREATE OR REPLACE TABLE `project.dataset.stg_orders` AS (
+      SELECT id, name, price FROM raw.orders
+    )
+
+
+KEY RULES:
+    1. One file = one model = one table/view in the warehouse
+    2. The file name becomes the table name
+       stg_shopify__orders.sql → table named stg_shopify__orders
+    3. Models can reference other models using ref()
+    4. Models can reference raw tables using source()
+    5. Models can include Jinja ({{ }}) for dynamic SQL
+
+
+================================================================================
+2. CREATING YOUR FIRST MODEL (STEP BY STEP)
+================================================================================
+
+Let's say you want to create a model that lists all products sold.
+
+    STEP 1: Create the SQL file
+    ───────────────────────────
+    Create a new file: models/staging/shopify/my_first_model.sql
+    
+    Write a SELECT statement:
+    
+        SELECT
+            CAST(id AS STRING) AS order_id,
+            CAST(total_price AS FLOAT64) AS total_amount,
+            source_name AS order_source
+        FROM {{ source('shopify_raw', 'orders') }}
+
+    STEP 2: Run it
+    ──────────────
+    In terminal:  dbt run -s my_first_model
+    
+    dbt will:
+    1. Read the file
+    2. Replace {{ source('shopify_raw', 'orders') }} with actual table
+    3. Create a VIEW in BigQuery called my_first_model
+    4. Report success/failure
+
+    STEP 3: Query it
+    ────────────────
+    In BigQuery Console:
+    SELECT * FROM `saras-bigquery.dbt_training_staging.my_first_model`
+    
+    → You'll see your clean data!
+
+    STEP 4: Document it (optional but recommended)
+    ───────────────────────────────────────────────
+    In _shopify__models.yml, add:
+    
+        - name: my_first_model
+          description: My first dbt model - order ID and amount
+          columns:
+            - name: order_id
+              tests:
+                - not_null
+
+    STEP 5: Test it
+    ──────────────
+    dbt test -s my_first_model
+    
+    → Checks that order_id has no NULLs
+
+
+================================================================================
+3. MODEL NAMING CONVENTIONS
+================================================================================
+
+Naming is CRITICAL in dbt. Follow these patterns:
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │ Layer        │ Pattern                           │ Example          │
+    ├─────────────────────────────────────────────────────────────────────┤
+    │ Staging      │ stg_{source}__{entity}            │ stg_shopify__orders   │
+    │ Intermediate │ int_{entity}__{verb/description}  │ int_orders__enriched  │
+    │ Fact         │ fct_{event/activity}              │ fct_orders            │
+    │ Dimension    │ dim_{entity}                      │ dim_customers         │
+    │ Metric       │ metricflow_{metric}               │ (advanced topic)      │
+    └─────────────────────────────────────────────────────────────────────┘
+
+    WHY DOUBLE UNDERSCORE?
+    ──────────────────────
+    Single underscore = within a name component
+    Double underscore = separator between source and entity
+    
+    stg_google_analytics__sessions
+        ↑                    ↑
+    source name          entity name
+    (one underscore       (separated by
+     within it)            double underscore)
+
+    stg_shopify__order_line_items
+        ↑            ↑
+    source         entity (order_line_items has underscores)
+
+
+    GOOD NAMES:                          BAD NAMES:
+    stg_shopify__orders                  orders_staging
+    stg_shopify__order_line_items        shopify_items
+    int_orders__enriched                 enriched_stuff
+    fct_orders                           orders_final_v2
+    dim_customers                        cust_table
+
+
+================================================================================
+4. MODEL CONFIGURATION — {{ config() }}
+================================================================================
+
+Every model can have a config block at the TOP of the file:
+
+    {{ config(
+        materialized='view',
+        schema='staging',
+        tags=['shopify', 'daily'],
+        description='Cleaned Shopify orders'
+    ) }}
+    
+    SELECT ...
+
+CONFIG OPTIONS EXPLAINED:
+
+    ┌─────────────────────┬──────────────────────────────────────────┐
+    │ Option              │ What It Does                             │
+    ├─────────────────────┼──────────────────────────────────────────┤
+    │ materialized        │ 'view', 'table', 'incremental',         │
+    │                     │ 'ephemeral'                              │
+    │                     │                                          │
+    │ schema              │ Override the output dataset              │
+    │                     │ Default inherits from dbt_project.yml    │
+    │                     │                                          │
+    │ tags                │ Labels for selecting models              │
+    │                     │ dbt run -s tag:daily                     │
+    │                     │                                          │
+    │ description         │ Human-readable description               │
+    │                     │ Shows in dbt docs                        │
+    │                     │                                          │
+    │ enabled             │ true/false - skip this model             │
+    │                     │ Useful for WIP or deprecated models      │
+    │                     │                                          │
+    │ pre_hook            │ SQL to run BEFORE creating the model     │
+    │ post_hook           │ SQL to run AFTER creating the model      │
+    └─────────────────────┴──────────────────────────────────────────┘
+
+CONFIG PRECEDENCE (what wins?):
+    
+    1. In-file {{ config() }}     ← HIGHEST priority (wins)
+    2. YAML file properties
+    3. dbt_project.yml models:    ← LOWEST priority
+
+    EXAMPLE:
+    dbt_project.yml says: staging → materialized: view
+    But if a model says: {{ config(materialized='table') }}
+    → The model's config WINS → it becomes a TABLE
+
+
+================================================================================
+5. CTE PATTERN — HOW TO WRITE CLEAN MODELS
+================================================================================
+
+CTE = Common Table Expression (the WITH ... AS () pattern)
+
+This is the RECOMMENDED way to write dbt models:
+
+    GENERAL PATTERN:
+    ────────────────
+    WITH
+    
+    source AS (
+        -- Step 1: Get raw data
+        SELECT * FROM {{ source('name', 'table') }}
+        -- or: SELECT * FROM {{ ref('upstream_model') }}
+    ),
+    
+    cleaned AS (
+        -- Step 2: Clean and rename
+        SELECT
+            id AS order_id,
+            CAST(price AS FLOAT64) AS amount
+        FROM source
+    ),
+    
+    filtered AS (
+        -- Step 3: Filter
+        SELECT * FROM cleaned
+        WHERE amount > 0
+    ),
+    
+    final AS (
+        -- Step 4: Add calculations
+        SELECT
+            *,
+            amount * 0.1 AS tax_estimate
+        FROM filtered
+    )
+    
+    SELECT * FROM final
+
+
+    WHY CTEs?
+    
+    1. READABILITY: Each step is named and does one thing
+    2. DEBUGGABILITY: Comment out steps to isolate issues
+    3. NO TEMP TABLES: CTEs are compiled into a single query
+    4. CONVENTION: Everyone in dbt world writes this way
+
+
+YOUR REAL CTE EXAMPLE — stg_shopify__orders.sql:
+
+    WITH source AS (
+        -- Get raw data from BigQuery
+        SELECT * FROM {{ source('shopify_raw', 'orders') }}
+    ),
+    
+    extract_customer AS (
+        -- Extract customer_id from nested array
+        SELECT *, CAST(customer[SAFE_OFFSET(0)].id AS STRING) AS customer_id_extracted
+        FROM source
+    ),
+    
+    renamed AS (
+        -- Clean column names and cast types
+        SELECT
+            CAST(id AS STRING) AS order_id,
+            customer_id_extracted AS customer_id,
+            CAST(total_price AS FLOAT64) AS total_amount,
+            ...
+        FROM extract_customer
+    ),
+    
+    deduplicated AS (
+        -- Remove duplicates using ROW_NUMBER
+        SELECT *, ROW_NUMBER() OVER (...) AS _dedup_row_num
+        FROM renamed
+    ),
+    
+    filtered AS (
+        -- Keep only first row per order
+        SELECT * EXCEPT(_dedup_row_num) FROM deduplicated WHERE _dedup_row_num = 1
+    ),
+    
+    with_window_functions AS (
+        -- Add analytics columns
+        SELECT *, ROW_NUMBER() OVER (...) AS customer_order_sequence, ...
+        FROM filtered
+    )
+    
+    SELECT * FROM with_window_functions
+
+
+================================================================================
+6. THE THREE-LAYER ARCHITECTURE IN PRACTICE
+================================================================================
+
+Every dbt project should have 3 layers. Here's what each does:
+
+    ┌─────────────────────────────────────────────────────────┐
+    │                   DATA FLOW                             │
+    │                                                         │
+    │  SOURCES        STAGING        INTERMEDIATE    MARTS    │
+    │  (raw data)     (clean)        (enrich)        (serve)  │
+    │                                                         │
+    │  One source  →  One model   →  Join models  → Star     │
+    │  per system     per entity     add logic      schema    │
+    │                                                         │
+    │  Database:      Views:         Views:         Tables:   │
+    │  raw_shopify    _staging       (default)      _marts    │
+    └─────────────────────────────────────────────────────────┘
+
+    RULE OF THUMB:
+    - Staging:       1:1 with source tables
+    - Intermediate:  Joins, aggregations, business logic
+    - Marts:         End-user facing, optimized for BI
+
+
+REAL MAPPING TO YOUR PROJECT:
+
+    SOURCE                      STAGING                         INTERMEDIATE              MARTS
+    ─────────                   ────────                        ──────────────            ─────
+    raw_shopify.orders    →     stg_shopify__orders        →    int_orders__enriched  →   fct_orders
+                          →     stg_shopify__order_line_items                         →   dim_products
+                          →     stg_shopify__fulfillments                             →   dim_customers
+                                                            →    int_customers__       →   fct_daily_revenue
+                                                                 order_history
+
+
+================================================================================
+7. STAGING MODELS — DEEP DIVE
+================================================================================
+
+PURPOSE: Clean and standardize raw data. NOTHING MORE.
+
+WHAT STAGING SHOULD DO:
+    ✅ Rename columns (id → order_id)
+    ✅ Cast data types (STRING → FLOAT64)
+    ✅ Handle defaults (COALESCE(fulfillment_status, 'unfulfilled'))
+    ✅ Standardize values (LOWER(financial_status))
+    ✅ Extract nested fields (customer[0].id)
+    ✅ UNNEST arrays into separate tables
+    ✅ Deduplicate records
+    ✅ Add simple window functions for context
+
+WHAT STAGING SHOULD NOT DO:
+    ❌ Join to other models
+    ❌ Complex business logic
+    ❌ Aggregations (GROUP BY)
+    ❌ Creating new entities
+
+GENERAL EXAMPLE — Staging a "users" table:
+
+    {{ config(materialized='view') }}
+    
+    WITH source AS (
+        SELECT * FROM {{ source('app_database', 'users') }}
+    ),
+    
+    renamed AS (
+        SELECT
+            CAST(user_id AS STRING) AS user_id,
+            LOWER(TRIM(email)) AS email,
+            CONCAT(first_name, ' ', last_name) AS full_name,
+            CAST(created_at AS TIMESTAMP) AS registered_at,
+            CASE 
+                WHEN status = 'A' THEN 'active'
+                WHEN status = 'I' THEN 'inactive'
+                ELSE 'unknown'
+            END AS user_status
+        FROM source
+    )
+    
+    SELECT * FROM renamed
+
+
+YOUR SHOPIFY EXAMPLE — stg_shopify__orders.sql does:
+
+    1. Extracts customer_id from nested array:
+       CAST(customer[SAFE_OFFSET(0)].id AS STRING) AS customer_id_extracted
+    
+    2. Renames columns consistently:
+       id → order_id
+       total_price → total_amount
+       source_name → order_source
+    
+    3. Casts types:
+       CAST(total_price AS FLOAT64) AS total_amount
+       CAST(confirmed AS BOOL) AS is_confirmed
+    
+    4. Standardizes values:
+       LOWER(financial_status) AS payment_status
+       LOWER(COALESCE(fulfillment_status, 'unfulfilled'))
+    
+    5. Deduplicates with ROW_NUMBER:
+       PARTITION BY order_id ORDER BY synced_at DESC
+    
+    6. Adds 8 window functions:
+       customer_order_sequence, previous_order_at, etc.
+
+
+================================================================================
+8. INTERMEDIATE MODELS — DEEP DIVE
+================================================================================
+
+PURPOSE: Join staging tables, apply business logic, create reusable blocks.
+
+WHEN TO USE INTERMEDIATE:
+    - You need to JOIN two or more staging tables
+    - Logic is complex enough to warrant its own model
+    - Multiple marts need the same joined/transformed data
+    - You're aggregating before joining (to prevent row explosion)
+
+GENERAL EXAMPLE — Joining orders with payments:
+
+    {{ config(materialized='view') }}
+    
+    WITH orders AS (
+        SELECT * FROM {{ ref('stg_app__orders') }}
+    ),
+    
+    payments AS (
+        SELECT
+            order_id,
+            SUM(amount) AS total_paid,
+            COUNT(*) AS payment_count
+        FROM {{ ref('stg_stripe__payments') }}
+        GROUP BY order_id           -- ← Aggregate BEFORE joining!
+    ),
+    
+    enriched AS (
+        SELECT
+            o.*,
+            COALESCE(p.total_paid, 0) AS total_paid,
+            COALESCE(p.payment_count, 0) AS payment_count,
+            CASE
+                WHEN p.total_paid >= o.total_amount THEN 'fully_paid'
+                WHEN p.total_paid > 0 THEN 'partially_paid'
+                ELSE 'unpaid'
+            END AS payment_status_derived
+        FROM orders o
+        LEFT JOIN payments p ON o.order_id = p.order_id
+    )
+    
+    SELECT * FROM enriched
+
+
+YOUR SHOPIFY EXAMPLE — int_orders__enriched.sql:
+
+    1. Gets cleaned orders from staging:
+       SELECT * FROM {{ ref('stg_shopify__orders') }}
+    
+    2. AGGREGATES line items BEFORE joining (critical!):
+       SELECT order_id, COUNT(*) AS line_item_count, SUM(quantity) AS total_quantity
+       FROM {{ ref('stg_shopify__order_line_items') }}
+       GROUP BY order_id
+    
+    3. AGGREGATES fulfillments BEFORE joining:
+       SELECT order_id, MIN(fulfilled_at), COUNT(*) AS fulfillment_count
+       FROM {{ ref('stg_shopify__fulfillments') }}
+       GROUP BY order_id
+    
+    4. LEFT JOINs all three:
+       orders LEFT JOIN line_item_summary LEFT JOIN fulfillment_summary
+       
+    5. Adds derived fields:
+       - is_canceled (based on cancellation_reason)
+       - order_size_bucket (small/medium/large/enterprise)
+       - discount_rate (discount / subtotal)
+       - hours_to_first_fulfillment
+
+    ⚠️ CRITICAL PATTERN: Aggregate BEFORE Join!
+    
+    WHY? If an order has 3 line items and 2 fulfillments:
+    
+    ❌ Without pre-aggregation:
+       orders JOIN line_items JOIN fulfillments
+       → 3 × 2 = 6 rows per order (WRONG! Cartesian product)
+    
+    ✅ With pre-aggregation:
+       orders JOIN (line_items grouped by order_id) JOIN (fulfillments grouped by order_id)
+       → 1 row per order (CORRECT!)
+
+
+================================================================================
+9. MART MODELS — FACT TABLES
+================================================================================
+
+FACT TABLE = a table of EVENTS or TRANSACTIONS.
+Each row = one thing that happened.
+
+    CHARACTERISTICS:
+    - Contains MEASURES (numbers you aggregate): amounts, quantities, counts
+    - Contains FOREIGN KEYS to dimension tables: customer_id, product_id
+    - Contains TIMESTAMPS: when did this event happen?
+    - Typically LARGE (many rows)
+    - Named with fct_ prefix
+
+GENERAL EXAMPLE — fct_website_visits:
+
+    {{ config(materialized='table') }}
+    
+    WITH visits AS (
+        SELECT * FROM {{ ref('int_visits__enriched') }}
+    )
+    
+    SELECT
+        -- Primary key
+        visit_id,
+        
+        -- Foreign keys (links to dimension tables)
+        user_id,            -- → dim_users
+        page_id,            -- → dim_pages
+        campaign_id,        -- → dim_campaigns
+        
+        -- Timestamp (when did this happen?)
+        visited_at,
+        DATE(visited_at) AS visit_date,
+        
+        -- Measures (numbers to aggregate)
+        page_views,
+        session_duration_seconds,
+        bounce_count
+    
+    FROM visits
+
+
+YOUR SHOPIFY EXAMPLE — fct_orders.sql:
+
+    {{ config(materialized='table', tags=['core', 'daily']) }}
+    
+    SELECT
+        -- Primary key
+        order_id,
+        
+        -- Foreign keys
+        customer_id,          -- → links to dim_customers
+        order_date,           -- → could link to dim_dates
+        
+        -- Time attributes (for analysis)
+        order_year, order_month, order_day_of_week, order_hour,
+        
+        -- Measures (things you SUM, AVG, COUNT)
+        total_amount,         -- SUM this for total revenue
+        discount_amount,      -- SUM this for total discounts
+        line_item_count,      -- AVG this for items per order
+        total_quantity,       -- SUM this for units sold
+        
+        -- Status (for filtering)
+        payment_status,
+        fulfillment_status,
+        is_canceled,
+        
+        -- Flags
+        is_first_order        -- Filter for new customer analysis
+    
+    FROM {{ ref('int_orders__enriched') }}
+
+
+    ANOTHER FACT TABLE — fct_daily_revenue:
+
+    This is a HIGHER GRAIN fact table (aggregated):
+    
+    Grain: one row PER DAY (instead of per order)
+    
+    SELECT
+        order_date,           -- ONE row per day
+        COUNT(*) AS order_count,
+        SUM(total_amount) AS total_revenue,
+        AVG(total_amount) AS average_order_value,
+        COUNT(DISTINCT customer_id) AS unique_customers
+    FROM {{ ref('fct_orders') }}
+    WHERE is_canceled = FALSE
+    GROUP BY order_date
+
+
+================================================================================
+10. MART MODELS — DIMENSION TABLES
+================================================================================
+
+DIMENSION TABLE = a table of ENTITIES or THINGS.
+Each row = one thing that EXISTS.
+
+    CHARACTERISTICS:
+    - Contains ATTRIBUTES (descriptive fields): name, email, category
+    - Contains the PRIMARY KEY that fact tables reference
+    - Typically SMALLER than fact tables
+    - Changes slowly (customer name rarely changes)
+    - Named with dim_ prefix
+
+GENERAL EXAMPLE — dim_users:
+
+    {{ config(materialized='table') }}
+    
+    WITH user_history AS (
+        SELECT * FROM {{ ref('int_users__aggregated') }}
+    )
+    
+    SELECT
+        user_id,              -- Primary key
+        
+        -- Descriptive attributes
+        full_name,
+        email,
+        country,
+        city,
+        
+        -- Classification
+        user_tier,            -- 'gold', 'silver', 'bronze'
+        
+        -- Aggregated metrics
+        total_orders,
+        lifetime_revenue,
+        
+        -- Dates
+        registered_at,
+        last_active_at
+    
+    FROM user_history
+
+
+YOUR SHOPIFY EXAMPLE — dim_customers.sql:
+
+    {{ config(materialized='table', tags=['core', 'daily']) }}
+    
+    SELECT
+        -- Primary key
+        customer_id,
+        
+        -- Contact info
+        customer_email,
+        
+        -- Acquisition (how did they find us?)
+        acquisition_source,            -- 'TikTok', 'web'
+        first_order_date,
+        
+        -- Behavior metrics
+        lifetime_order_count,
+        lifetime_value,                -- Total $ spent
+        average_order_value,
+        days_since_last_order,
+        
+        -- Segments (for marketing)
+        frequency_segment,             -- 'one_time', 'loyal', 'champion'
+        recency_segment,               -- 'active', 'cooling', 'churned'
+        value_segment,                 -- 'low_value', 'vip'
+        customer_tier,                 -- 'platinum', 'gold', 'silver', 'bronze'
+        
+        -- Risk flags
+        is_at_churn_risk
+    
+    FROM {{ ref('int_customers__order_history') }}
+
+
+STAR SCHEMA — How Facts and Dimensions Connect:
+
+    ┌───────────────┐
+    │ dim_customers │
+    │ ─────────────│
+    │ customer_id  ◄────────────┐
+    │ name          │           │
+    │ email         │           │
+    │ tier          │           │
+    └───────────────┘           │
+                                │
+    ┌───────────────────────────┴───────────────┐
+    │              fct_orders                    │
+    │ ─────────────────────────────────────────│
+    │ order_id (PK)                             │
+    │ customer_id (FK) ──► dim_customers        │
+    │ order_date       ──► dim_dates (future)   │
+    │ total_amount                               │
+    │ discount_amount                            │
+    │ line_item_count                            │
+    └───────────────────────────────────────────┘
+                                │
+    ┌───────────────┐           │
+    │ dim_products  │           │
+    │ ─────────────│           │
+    │ product_id   ◄───────────┘ (via line items)
+    │ product_title │
+    │ vendor        │
+    │ revenue_rank  │
+    └───────────────┘
+
+
+================================================================================
+11. MODEL DEPENDENCIES AND ref()
+================================================================================
+
+VISUALIZING DEPENDENCIES — Your Project's Dependency Graph:
+
+    Level 0 (Source):
+        source('shopify_raw', 'orders')
+        
+    Level 1 (Staging — no model dependencies):
+        stg_shopify__orders
+        stg_shopify__order_line_items
+        stg_shopify__fulfillments
+        
+    Level 2 (Intermediate — depends on staging):
+        int_orders__enriched         ← refs: stg_orders + stg_line_items + stg_fulfillments
+        int_customers__order_history ← refs: stg_orders
+        
+    Level 3 (Marts — depends on intermediate):
+        fct_orders                   ← refs: int_orders__enriched
+        dim_customers                ← refs: int_customers__order_history
+        dim_products                 ← refs: stg_shopify__order_line_items
+        
+    Level 4 (Marts — depends on other marts):
+        fct_daily_revenue            ← refs: fct_orders
+
+
+    dbt runs them in ORDER:
+    Level 1 first → Level 2 → Level 3 → Level 4
+
+
+    CHECKING DEPENDENCIES:
+    
+    If you change stg_shopify__orders, what's affected?
+    
+    stg_shopify__orders
+      └── int_orders__enriched
+      │     └── fct_orders
+      │           └── fct_daily_revenue
+      └── int_customers__order_history
+            └── dim_customers
+    
+    Answer: 5 downstream models are affected!
+
+    You can rebuild them all with:
+    dbt run -s stg_shopify__orders+
+    (the + means "and everything downstream")
+
+
+================================================================================
+12. YAML FILES — DOCUMENTATION & TESTS
+================================================================================
+
+YAML files (.yml) describe and test your models.
+
+FOR EACH MODEL in YAML, you can define:
+    - description (documentation)
+    - columns with descriptions
+    - tests on columns
+
+STRUCTURE:
+
+    version: 2
+    
+    models:
+      - name: stg_shopify__orders          ← Must match SQL file name!
+        description: |
+          Cleaned Shopify orders.
+          **Grain:** One row per order
+        
+        columns:
+          - name: order_id
+            description: Primary key
+            tests:
+              - unique                      ← No duplicate values
+              - not_null                    ← No NULL values
+          
+          - name: customer_id
+            description: Foreign key to customer
+            tests:
+              - not_null
+              - relationships:              ← FK exists in other table
+                  arguments:
+                    to: ref('dim_customers')
+                    field: customer_id
+          
+          - name: payment_status
+            description: Payment status
+            tests:
+              - accepted_values:            ← Only these values allowed
+                  arguments:
+                    values: ['paid', 'pending', 'refunded']
+
+
+FOUR BUILT-IN TESTS:
+
+    1. unique        → No duplicate values in this column
+    2. not_null      → No NULL values in this column
+    3. accepted_values → Column only contains these specific values
+    4. relationships → Every value exists in another table's column (FK check)
+
+
+YOUR YAML FILES:
+
+    _shopify__models.yml      → Tests for 3 staging models (49+ tests!)
+    _int_shopify__models.yml  → Tests for 2 intermediate models
+    _core__models.yml         → Tests for 4 mart models
+
+
+================================================================================
+13. GENERAL EXAMPLE — E-COMMERCE FROM SCRATCH
+================================================================================
+
+Let's build a mini dbt project for a fictional e-commerce store:
+
+    RAW TABLES IN WAREHOUSE:
+    - raw.customers (id, name, email, country)
+    - raw.orders    (id, customer_id, total, created_at)
+    - raw.products  (id, name, price, category)
+
+    STEP 1 — STAGING MODELS:
+    
+    stg_ecommerce__customers.sql:
+        SELECT
+            CAST(id AS STRING) AS customer_id,
+            TRIM(name) AS customer_name,
+            LOWER(email) AS email,
+            UPPER(country) AS country_code
+        FROM {{ source('ecommerce', 'customers') }}
+    
+    stg_ecommerce__orders.sql:
+        SELECT
+            CAST(id AS STRING) AS order_id,
+            CAST(customer_id AS STRING) AS customer_id,
+            CAST(total AS FLOAT64) AS total_amount,
+            CAST(created_at AS TIMESTAMP) AS ordered_at
+        FROM {{ source('ecommerce', 'orders') }}
+    
+    stg_ecommerce__products.sql:
+        SELECT
+            CAST(id AS STRING) AS product_id,
+            name AS product_name,
+            CAST(price AS FLOAT64) AS price,
+            LOWER(category) AS category
+        FROM {{ source('ecommerce', 'products') }}
+
+    STEP 2 — INTERMEDIATE:
+    
+    int_customers__enriched.sql:
+        WITH customers AS (
+            SELECT * FROM {{ ref('stg_ecommerce__customers') }}
+        ),
+        order_stats AS (
+            SELECT
+                customer_id,
+                COUNT(*) AS total_orders,
+                SUM(total_amount) AS lifetime_value,
+                MAX(ordered_at) AS last_order_at
+            FROM {{ ref('stg_ecommerce__orders') }}
+            GROUP BY customer_id
+        )
+        SELECT
+            c.*,
+            COALESCE(o.total_orders, 0) AS total_orders,
+            COALESCE(o.lifetime_value, 0) AS lifetime_value,
+            o.last_order_at
+        FROM customers c
+        LEFT JOIN order_stats o ON c.customer_id = o.customer_id
+
+    STEP 3 — MARTS:
+    
+    fct_orders.sql:
+        SELECT
+            o.order_id,
+            o.customer_id,
+            o.total_amount,
+            o.ordered_at,
+            DATE(o.ordered_at) AS order_date
+        FROM {{ ref('stg_ecommerce__orders') }} o
+    
+    dim_customers.sql:
+        SELECT
+            customer_id,
+            customer_name,
+            email,
+            total_orders,
+            lifetime_value,
+            CASE
+                WHEN lifetime_value > 1000 THEN 'vip'
+                WHEN lifetime_value > 100 THEN 'regular'
+                ELSE 'new'
+            END AS customer_tier
+        FROM {{ ref('int_customers__enriched') }}
+
+
+================================================================================
+14. YOUR SHOPIFY EXAMPLE — FULL DATA FLOW
+================================================================================
+
+Let's trace one real order through ALL layers:
+
+    ORDER: #JC730928 (Jason Andrews from Ohio)
+    Product: 3 Pack Multi Flavor Carnitine —$90.00,  Discount: $40.00
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │ RAW (source):                                               │
+    │   {"id":"5946576568372", "total_price":"53.38",             │
+    │    "customer":[{"id":"8274978865204","first_name":"Jason"}],│
+    │    "line_items":[{"id":"14169914671156","price":"90.00"}],  │
+    │    "fulfillments":[{"id":"5407290949684","tracking_company":│
+    │                     "DHL eCommerce"}]}                      │
+    └──────────────────────────┬──────────────────────────────────┘
+                               │
+    ┌──────────────────────────▼──────────────────────────────────┐
+    │ STAGING (stg_shopify__orders):                              │
+    │   order_id: "5946576568372"                                │
+    │   customer_id: "8274978865204"  (extracted from array!)     │
+    │   total_amount: 53.38  (FLOAT64, not string)               │
+    │   payment_status: "paid"  (lowercase)                       │
+    │   order_source: "TikTok"                                    │
+    │   customer_order_sequence: 1  (first order!)               │
+    │   is_first_order: TRUE                                      │
+    │   (line_items excluded — separate model)                    │
+    │   (fulfillments excluded — separate model)                  │
+    └──────────────────────────┬──────────────────────────────────┘
+                               │
+    ┌──────────────────────────▼──────────────────────────────────┐
+    │ STAGING (stg_shopify__order_line_items):                    │
+    │   order_id: "5946576568372"                                │
+    │   line_item_id: "14169914671156"                           │
+    │   product_title: "3 Pack Multi Flavor Carnitine"           │
+    │   unit_price: 90.00                                        │
+    │   quantity: 1                                              │
+    │   line_share_of_order: 1.0  (only item = 100%)            │
+    └──────────────────────────┬──────────────────────────────────┘
+                               │
+    ┌──────────────────────────▼──────────────────────────────────┐
+    │ INTERMEDIATE (int_orders__enriched):                        │
+    │   order_id: "5946576568372"                                │
+    │   customer_id: "8274978865204"                              │
+    │   total_amount: 53.38                                      │
+    │   line_item_count: 1  (from line item summary)             │
+    │   total_quantity: 1                                        │
+    │   fulfillment_count: 1  (from fulfillment summary)         │
+    │   hours_to_first_fulfillment: ~0.5hr                       │
+    │   is_canceled: FALSE                                       │
+    │   order_size_bucket: "medium"  (25-100)                    │
+    │   discount_rate: 0.80  (40/50 = 80% discount!)            │
+    └──────────────────────────┬──────────────────────────────────┘
+                               │
+    ┌──────────────────────────▼──────────────────────────────────┐
+    │ MART (fct_orders):                                          │
+    │   order_id: "5946576568372"                                │
+    │   customer_id: "8274978865204"                              │
+    │   order_date: 2026-01-21                                    │
+    │   order_year: 2026                                          │
+    │   order_month: 1                                            │
+    │   order_day_of_week: 4 (Wednesday)                          │
+    │   total_amount: 53.38                                      │
+    │   discount_amount: 40.00                                   │
+    │   order_size_bucket: "medium"                               │
+    │   is_first_order: TRUE                                     │
+    │   order_source: "TikTok"                                   │
+    └─────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+15. COMMON MISTAKES & BEST PRACTICES
+================================================================================
+
+    ❌ MISTAKE 1: Hardcoding table names
+       SELECT * FROM `project.dataset.table`
+       ✅ FIX: Use source() and ref()
+
+    ❌ MISTAKE 2: Joining in staging
+       Staging should only clean ONE source table
+       ✅ FIX: JOIN in intermediate layer
+
+    ❌ MISTAKE 3: Not deduplicating
+       Raw data often has duplicates from syncs
+       ✅ FIX: ROW_NUMBER() PARTITION BY primary_key
+
+    ❌ MISTAKE 4: SELECT * in final models
+       Selects everything including internal columns
+       ✅ FIX: Explicitly list columns you need
+
+    ❌ MISTAKE 5: No tests
+       How do you know order_id is unique?
+       ✅ FIX: YAML tests — unique, not_null minimum
+
+    ❌ MISTAKE 6: Making staging tables
+       Staging as TABLE wastes storage
+       ✅ FIX: Staging = VIEW, Marts = TABLE
+
+    ❌ MISTAKE 7: Not aggregating before joining
+       JOIN line_items (3 rows) × fulfillments (2 rows) = 6 rows
+       ✅ FIX: Aggregate to order_id level BEFORE joining
+
+    ❌ MISTAKE 8: Giant monolith models
+       One 500-line SQL file doing everything
+       ✅ FIX: Break into staging → intermediate → marts
+
+
+================================================================================
+NEXT: Read 03_seeds.txt for a deep dive into dbt seeds
+================================================================================

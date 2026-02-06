@@ -50,6 +50,8 @@ unnested AS (
         source.order_number,
         source.name AS order_name,
         CAST(source.created_at AS TIMESTAMP) AS order_created_at,
+        TIMESTAMP_MILLIS(CAST(source._daton_batch_runtime AS INT64)) AS synced_at,
+        source._daton_batch_id,
         
         -- Unnest the fulfillments array
         fulfillment
@@ -65,6 +67,10 @@ renamed AS (
     SELECT
         -- Primary key
         CAST(fulfillment.id AS STRING) AS fulfillment_id,
+
+        -- Sync metadata
+        synced_at,
+        _daton_batch_id,
         
         -- Foreign key to orders
         order_id,
@@ -114,7 +120,7 @@ deduplicated AS (
         *,
         ROW_NUMBER() OVER (
             PARTITION BY fulfillment_id
-            ORDER BY fulfillment_updated_at DESC
+            ORDER BY fulfillment_updated_at DESC, synced_at DESC
         ) AS _dedup_row_num
     FROM renamed
 ),

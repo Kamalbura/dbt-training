@@ -1,0 +1,783 @@
+================================================================================
+dbt FUNDAMENTALS — THE COMPLETE BEGINNER'S GUIDE
+================================================================================
+Author: dbt Training Course
+Dataset: Shopify Orders (JayCutler.com)
+================================================================================
+
+TABLE OF CONTENTS:
+  1. What is dbt?
+  2. Why does dbt exist? (The Problem it Solves)
+  3. How dbt Works (The Big Picture)
+  4. Your dbt Project Structure Explained
+  5. The dbt_project.yml File
+  6. Profiles (Database Connection)
+  7. Sources — source()
+  8. Models — The Core of dbt
+  9. ref() — The Magic Function
+  10. Materializations (view, table, incremental, ephemeral)
+  11. The DAG (Directed Acyclic Graph)
+  12. dbt Commands You Need
+  13. How It All Connects in YOUR Project
+
+
+================================================================================
+1. WHAT IS dbt?
+================================================================================
+
+dbt = "data build tool"
+
+SIMPLE DEFINITION:
+    dbt is a tool that lets you transform data in your warehouse using SQL.
+    You write SELECT statements, and dbt turns them into tables/views for you.
+
+ANALOGY — THE KITCHEN:
+    Think of your data warehouse (BigQuery) as a kitchen:
+    
+    ┌─────────────────────────────────────────────────────────────────┐
+    │                                                                 │
+    │   RAW INGREDIENTS          dbt (THE CHEF)          DISHES      │
+    │   ┌───────────┐           ┌───────────┐          ┌──────────┐  │
+    │   │ Raw JSON  │  ──────► │ SQL Models │ ──────► │ Clean    │  │
+    │   │ orders    │           │ (recipes) │          │ Tables   │  │
+    │   │ messy     │           │           │          │ for BI   │  │
+    │   │ nested    │           │ Transform │          │ dashbords│  │
+    │   └───────────┘           └───────────┘          └──────────┘  │
+    │                                                                 │
+    └─────────────────────────────────────────────────────────────────┘
+    
+    - Raw ingredients = your raw tables (Shopify orders JSONL)
+    - Recipes = your SQL models (stg_shopify__orders.sql)
+    - Dishes = clean tables for analytics (fct_orders, dim_customers)
+
+WHAT dbt IS NOT:
+    ✗ dbt does NOT extract data from APIs
+    ✗ dbt does NOT load data into your warehouse
+    ✗ dbt does NOT create dashboards
+    
+    dbt ONLY does the T in ELT (Extract → Load → Transform)
+    
+    ┌─────────┐    ┌─────────┐    ┌───────────────┐
+    │ Extract │ →  │  Load   │ →  │  Transform    │
+    │         │    │         │    │  (dbt lives   │
+    │ (Daton, │    │ (Python │    │   here!)      │
+    │  APIs)  │    │  script)│    │               │
+    └─────────┘    └─────────┘    └───────────────┘
+
+
+YOUR REAL EXAMPLE:
+    Extract: Daton synced JayCutler.com Shopify orders
+    Load:    scripts/load_jsonl_to_bq.py loaded JSONL → BigQuery
+    Transform: dbt models cleaned the data → staging → marts
+
+
+================================================================================
+2. WHY DOES dbt EXIST? (THE PROBLEM)
+================================================================================
+
+BEFORE dbt, data teams had these problems:
+
+    PROBLEM 1: Messy SQL Everywhere
+    ──────────────────────────────
+    Analysts wrote SQL queries directly in BigQuery console.
+    No version control. No collaboration. No testing.
+    
+    "Who wrote this 500-line query? What does it do?
+    Is it still correct? Can I change it safely?"
+
+    PROBLEM 2: Copy-Paste Logic
+    ──────────────────────────
+    Same business logic repeated in 20 different queries.
+    If the definition of "active customer" changes,
+    you need to update all 20 queries manually.
+
+    PROBLEM 3: No Testing
+    ────────────────────
+    How do you know your data is correct?
+    There's no automated way to check:
+    - Are there duplicate order IDs?
+    - Are there NULL customer IDs?
+    - Does every order have a valid customer?
+
+    PROBLEM 4: No Documentation
+    ─────────────────────────
+    "What does the 'orders_v3_final_FINAL' table contain?"
+    Nobody knows. The person who created it left the company.
+
+
+HOW dbt SOLVES THIS:
+
+    ┌─────────────────────┬────────────────────────────────────────┐
+    │ Problem             │ dbt Solution                           │
+    ├─────────────────────┼────────────────────────────────────────┤
+    │ Messy SQL           │ Organized .sql files in folders        │
+    │ Copy-paste logic    │ ref() function — reuse models          │
+    │ No testing          │ Built-in tests (unique, not_null)      │
+    │ No documentation    │ YAML files + dbt docs generate        │
+    │ No version control  │ SQL files in Git — track changes       │
+    │ No collaboration    │ Pull requests, code review             │
+    └─────────────────────┴────────────────────────────────────────┘
+
+
+================================================================================
+3. HOW dbt WORKS (THE BIG PICTURE)
+================================================================================
+
+Step-by-step, what happens when you run `dbt run`:
+
+    STEP 1: dbt reads your dbt_project.yml
+            → Learns project name, where files are, configurations
+    
+    STEP 2: dbt scans all .sql files in models/ folder
+            → Finds all your models
+    
+    STEP 3: dbt parses the Jinja ({{ }}) in each model
+            → Resolves ref(), source(), config() calls
+    
+    STEP 4: dbt builds a DAG (dependency graph)
+            → Figures out which model depends on which
+            → Determines execution ORDER
+    
+    STEP 5: dbt compiles SQL
+            → Replaces {{ ref('stg_shopify__orders') }}
+              with actual table name like:
+              `saras-bigquery.dbt_training_staging.stg_shopify__orders`
+    
+    STEP 6: dbt RUNS the SQL against BigQuery
+            → Creates VIEWs or TABLEs as configured
+            → Runs them in the correct dependency order
+    
+    STEP 7: dbt reports results
+            → "9 of 9 OK" = success!
+
+
+YOUR REAL EXAMPLE — When you run `dbt run`:
+
+    1. dbt reads dbt_project.yml → project "shopify_analytics"
+    
+    2. dbt finds 9 models:
+       - stg_shopify__orders
+       - stg_shopify__order_line_items
+       - stg_shopify__fulfillments
+       - int_orders__enriched
+       - int_customers__order_history
+       - fct_orders
+       - fct_daily_revenue
+       - dim_customers
+       - dim_products
+    
+    3. dbt resolves dependencies:
+       source(orders) → stg_orders → int_orders → fct_orders → fct_daily_revenue
+       
+    4. dbt runs in ORDER:
+       FIRST:  3 staging models (no dependencies on other models)
+       SECOND: 2 intermediate models (depend on staging)
+       THIRD:  4 mart models (depend on intermediate)
+    
+    5. dbt creates:
+       - 5 VIEWS (staging + intermediate, because materialized='view')
+       - 4 TABLES (marts, because materialized='table')
+
+
+================================================================================
+4. YOUR dbt PROJECT STRUCTURE
+================================================================================
+
+Let's map EVERY folder in your project:
+
+    dbt-training/                          ← Project root
+    │
+    ├── dbt_project.yml                    ← 🟡 MASTER CONFIG FILE
+    │                                         Tells dbt how to run
+    │
+    ├── models/                            ← 🟢 YOUR SQL MODELS
+    │   ├── staging/                       ← Layer 1: Clean raw data
+    │   │   └── shopify/                   ← Grouped by data source
+    │   │       ├── _shopify__sources.yml  ← Where raw data lives
+    │   │       ├── _shopify__models.yml   ← Tests & documentation
+    │   │       ├── stg_shopify__orders.sql
+    │   │       ├── stg_shopify__order_line_items.sql
+    │   │       └── stg_shopify__fulfillments.sql
+    │   │
+    │   ├── intermediate/                  ← Layer 2: Join & enrich
+    │   │   └── shopify/
+    │   │       ├── _int_shopify__models.yml
+    │   │       ├── int_orders__enriched.sql
+    │   │       └── int_customers__order_history.sql
+    │   │
+    │   └── marts/                         ← Layer 3: Final tables
+    │       └── core/
+    │           ├── _core__models.yml
+    │           ├── fct_orders.sql
+    │           ├── fct_daily_revenue.sql
+    │           ├── dim_customers.sql
+    │           └── dim_products.sql
+    │
+    ├── seeds/                             ← 🔵 CSV FILES → TABLES
+    │   └── country_codes.csv              ← Small lookup data
+    │
+    ├── macros/                            ← 🟣 REUSABLE SQL/JINJA
+    │   └── .gitkeep                       ← Empty for now
+    │
+    ├── tests/                             ← 🔴 CUSTOM SQL TESTS
+    │   └── (empty for now)
+    │
+    ├── snapshots/                         ← 📸 SCD Type 2 tracking
+    │   └── (empty for now)
+    │
+    ├── analyses/                          ← 📊 Ad-hoc SQL (not materialized)
+    │
+    ├── target/                            ← 🗂️ COMPILED OUTPUT (gitignored)
+    │   ├── compiled/                      ← Human-readable compiled SQL
+    │   ├── run/                           ← Actual SQL executed
+    │   ├── manifest.json                  ← Project metadata
+    │   └── run_results.json               ← Last run results
+    │
+    ├── scripts/                           ← Python helper scripts
+    │   ├── load_jsonl_to_bq.py           ← Load raw data
+    │   └── export_bq_tables.py           ← Export results
+    │
+    ├── RAW_DATASETS/                      ← Source JSONL file
+    │   └── bquxjob_...yourgpt.jsonl      ← 624 Shopify orders
+    │
+    ├── docs/                              ← Learning materials
+    │
+    └── logs/                              ← dbt execution logs
+
+
+================================================================================
+5. THE dbt_project.yml FILE — LINE BY LINE
+================================================================================
+
+Let's walk through YOUR actual file:
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │ name: 'shopify_analytics'                                   │
+    │                                                             │
+    │ WHAT: Your project's unique name                            │
+    │ RULES: lowercase, underscores only, no spaces               │
+    │ USED FOR: Internal identification                           │
+    └─────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │ version: '1.0.0'                                            │
+    │                                                             │
+    │ WHAT: Semantic version of your project                      │
+    │ FORMAT: major.minor.patch                                   │
+    │ EXAMPLE: 1.0.0 → first release, no changes yet             │
+    └─────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │ profile: 'default'                                          │
+    │                                                             │
+    │ WHAT: Which database connection to use                      │
+    │ WHERE: Matches a profile in ~/.dbt/profiles.yml             │
+    │ CONTAINS: project ID, dataset, credentials                  │
+    └─────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │ model-paths: ["models"]                                     │
+    │ seed-paths: ["seeds"]                                       │
+    │ macro-paths: ["macros"]                                     │
+    │ test-paths: ["tests"]                                       │
+    │ snapshot-paths: ["snapshots"]                                │
+    │                                                             │
+    │ WHAT: Tells dbt WHERE to find each type of file             │
+    │ DEFAULT: These are the standard folder names                │
+    │ YOU CAN: Change them, but usually don't need to             │
+    └─────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │ vars:                                                       │
+    │   raw_database: 'saras-bigquery'                            │
+    │   raw_schema: 'raw_shopify'                                 │
+    │                                                             │
+    │ WHAT: Project-wide variables you can reference               │
+    │ USED IN: _shopify__sources.yml as {{ var('raw_database') }} │
+    │ OVERRIDE: dbt run --vars '{"raw_database": "prod-project"}' │
+    │                                                             │
+    │ WHY: So you can switch between dev/prod without             │
+    │      editing source files!                                   │
+    └─────────────────────────────────────────────────────────────┘
+
+    ┌─────────────────────────────────────────────────────────────┐
+    │ models:                                                     │
+    │   shopify_analytics:        ← must match project name!      │
+    │     staging:                                                 │
+    │       +materialized: view   ← all staging = views           │
+    │       +schema: staging      ← dataset: dbt_training_staging │
+    │     marts:                                                   │
+    │       +materialized: table  ← all marts = tables            │
+    │       +schema: marts        ← dataset: dbt_training_marts   │
+    │                                                             │
+    │ WHAT: Configuration that CASCADES down folder structure      │
+    │ The + prefix means "config for this folder and all below"   │
+    └─────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+6. PROFILES — DATABASE CONNECTION
+================================================================================
+
+Your profiles.yml lives at:  C:\Users\Kamal Bura\.dbt\profiles.yml
+
+It tells dbt HOW to connect to BigQuery:
+
+    GENERIC EXAMPLE:
+    ────────────────
+    default:                              # Profile name
+      target: dev                         # Default target
+      outputs:
+        dev:                              # Target name
+          type: bigquery                  # Database type
+          method: oauth                   # Auth method
+          project: saras-bigquery         # GCP project
+          dataset: dbt_training           # Default dataset
+          location: US                    # Region
+          threads: 1                      # Parallel threads
+
+    HOW THE SCHEMA SETTING WORKS:
+    ────────────────────────────
+    Base dataset from profile: dbt_training
+    
+    Your staging +schema: staging
+    → Final dataset: dbt_training_staging
+    
+    Your marts +schema: marts
+    → Final dataset: dbt_training_marts
+    
+    Formula: {profile_dataset}_{schema}
+
+
+================================================================================
+7. SOURCES — source()
+================================================================================
+
+A SOURCE tells dbt:
+    "Here's where my RAW data lives. Don't build it — just READ from it."
+
+YOUR SOURCES FILE: models/staging/shopify/_shopify__sources.yml
+
+    WHAT IT SAYS:
+    
+    sources:
+      - name: shopify_raw          ← Nickname for this source
+        database: {{ var('raw_database') }}    ← GCP project
+        schema: {{ var('raw_schema') }}        ← BQ dataset
+        tables:
+          - name: orders            ← Actual table name
+
+    HOW YOU USE IT IN SQL:
+    
+    SELECT * FROM {{ source('shopify_raw', 'orders') }}
+    
+    What dbt compiles this to:
+    SELECT * FROM `saras-bigquery.raw_shopify.orders`
+
+    WHY USE source() INSTEAD OF HARDCODING?
+    
+    ❌ Bad:  SELECT * FROM `saras-bigquery.raw_shopify.orders`
+    ✅ Good: SELECT * FROM {{ source('shopify_raw', 'orders') }}
+    
+    Benefits:
+    1. dbt tracks it in the DAG (lineage)
+    2. You can test source columns
+    3. Easy to swap dev/prod databases via vars
+    4. Documentation auto-generates
+
+
+GENERAL EXAMPLE — If you had Stripe data too:
+
+    sources:
+      - name: stripe_raw
+        database: "{{ var('raw_database') }}"
+        schema: raw_stripe
+        tables:
+          - name: payments
+          - name: customers
+          - name: refunds
+
+    In SQL:
+    SELECT * FROM {{ source('stripe_raw', 'payments') }}
+
+
+================================================================================
+8. MODELS — THE CORE OF dbt
+================================================================================
+
+A MODEL is simply a SQL SELECT statement saved as a .sql file.
+
+    RULE: Every model = ONE SELECT statement
+    RULE: The file name = the table/view name in BigQuery
+    RULE: You NEVER write CREATE TABLE — dbt does it for you
+
+    SIMPLEST POSSIBLE MODEL (hello_world.sql):
+    ──────────────────────────────────────────
+    SELECT 'hello' AS greeting, CURRENT_DATE() AS today
+
+    → This creates a VIEW called "hello_world" in BigQuery
+    → With one row: | greeting: hello | today: 2026-02-06 |
+
+
+YOUR REAL MODELS:
+
+    stg_shopify__orders.sql
+    → File name becomes the VIEW name
+    → SELECT statement cleans and renames columns
+    → dbt runs: CREATE VIEW stg_shopify__orders AS (your SELECT)
+
+    fct_orders.sql
+    → File name becomes the TABLE name
+    → dbt runs: CREATE TABLE fct_orders AS (your SELECT)
+
+
+MODEL CONFIG — You can configure each model:
+
+    {{ config(
+        materialized='table',         -- table, view, incremental, ephemeral
+        schema='marts',               -- which dataset
+        tags=['core', 'daily'],       -- for filtering dbt run --select tag:core
+        description='Order facts'     -- documentation
+    ) }}
+
+    SELECT ...
+
+
+================================================================================
+9. ref() — THE MAGIC FUNCTION
+================================================================================
+
+ref() is the MOST IMPORTANT function in dbt.
+
+    WHAT IT DOES:
+    - References another model by its file name
+    - dbt automatically resolves to the correct database.schema.table
+    - dbt tracks the dependency between models
+
+    SYNTAX:
+    {{ ref('model_name') }}
+    
+    NOTE: 'model_name' is the FILE NAME without .sql extension
+
+    EXAMPLE:
+    ────────
+    -- In fct_orders.sql:
+    SELECT * FROM {{ ref('int_orders__enriched') }}
+    
+    -- dbt compiles this to:
+    SELECT * FROM `saras-bigquery.dbt_training.int_orders__enriched`
+
+
+    WHY ref() AND NOT HARDCODED TABLE NAMES?
+
+    ❌ SELECT * FROM `saras-bigquery.dbt_training.int_orders__enriched`
+    ✅ SELECT * FROM {{ ref('int_orders__enriched') }}
+
+    REASON 1: PORTABILITY
+    → Works in dev AND prod without changes
+    → Dev might be `dev_dataset.int_orders__enriched`
+    → Prod might be `prod_dataset.int_orders__enriched`
+    → ref() figures it out automatically
+
+    REASON 2: DEPENDENCY TRACKING
+    → dbt knows: fct_orders DEPENDS ON int_orders__enriched
+    → So it runs int_orders__enriched FIRST
+    → Then fct_orders SECOND
+    → Without ref(), dbt can't figure out the order
+
+    REASON 3: LINEAGE
+    → dbt can draw a graph showing how data flows
+    → source → staging → intermediate → marts
+    → This appears in `dbt docs generate`
+
+
+YOUR REAL DEPENDENCY CHAIN:
+
+    {{ source('shopify_raw', 'orders') }}       ← RAW TABLE (external)
+         │
+         ├──► {{ ref('stg_shopify__orders') }}          ← STAGING VIEW
+         │         │
+         │         ├──► {{ ref('int_orders__enriched') }}     ← INT VIEW
+         │         │         │
+         │         │         └──► {{ ref('fct_orders') }}     ← MART TABLE
+         │         │                   │
+         │         │                   └──► {{ ref('fct_daily_revenue') }}
+         │         │
+         │         └──► {{ ref('int_customers__order_history') }}
+         │                   │
+         │                   └──► {{ ref('dim_customers') }}
+         │
+         ├──► {{ ref('stg_shopify__order_line_items') }}
+         │         │
+         │         ├──► (joins into int_orders__enriched)
+         │         │
+         │         └──► {{ ref('dim_products') }}
+         │
+         └──► {{ ref('stg_shopify__fulfillments') }}
+                   │
+                   └──► (joins into int_orders__enriched)
+
+
+================================================================================
+10. MATERIALIZATIONS — HOW dbt CREATES YOUR MODELS
+================================================================================
+
+Materialization = "how should dbt store this in the warehouse?"
+
+There are 4 types:
+
+    ┌────────────────┬────────────────────────────────────────────────┐
+    │ TYPE           │ WHAT HAPPENS                                   │
+    ├────────────────┼────────────────────────────────────────────────┤
+    │ VIEW           │ CREATE VIEW AS (your SELECT)                   │
+    │                │ → No data stored                               │
+    │                │ → Re-runs SELECT every time queried             │
+    │                │ → Fast to create, slow to query (if complex)   │
+    │                │ → Best for: staging, intermediate              │
+    │                │                                                │
+    │ TABLE          │ CREATE TABLE AS (your SELECT)                   │
+    │                │ → Data physically stored                        │
+    │                │ → Fast to query (pre-computed)                  │
+    │                │ → Slow to create (must process all data)        │
+    │                │ → Uses storage space                            │
+    │                │ → Best for: marts (fct_, dim_)                 │
+    │                │                                                │
+    │ INCREMENTAL    │ First run: CREATE TABLE                         │
+    │                │ Next runs: INSERT only NEW/CHANGED rows         │
+    │                │ → Efficient for large datasets                  │
+    │                │ → Best for: append-only event data              │
+    │                │ → We'll learn this in Phase 4                  │
+    │                │                                                │
+    │ EPHEMERAL      │ NOT created in warehouse at all                 │
+    │                │ → Inlined as a CTE in downstream models         │
+    │                │ → No storage, no separate query                 │
+    │                │ → Best for: simple helper transformations       │
+    └────────────────┴────────────────────────────────────────────────┘
+
+
+GENERAL EXAMPLE — Same data, different materializations:
+
+    -- As VIEW (staging):
+    {{ config(materialized='view') }}
+    SELECT id, name, price FROM raw.products
+
+    -- BigQuery sees: CREATE VIEW products AS SELECT id, name, price FROM raw.products
+    -- When you query it, BigQuery re-runs the SELECT every time
+
+
+    -- As TABLE (mart):
+    {{ config(materialized='table') }}
+    SELECT id, name, price FROM raw.products
+
+    -- BigQuery sees: CREATE TABLE products AS SELECT id, name, price FROM raw.products
+    -- Data is stored. Querying is instant. But table is "stale" until dbt runs again.
+
+
+    -- As EPHEMERAL (helper):
+    {{ config(materialized='ephemeral') }}
+    SELECT id, name, price FROM raw.products
+
+    -- NOT created at all! Instead, when another model does ref('products'),
+    -- dbt injects it as a CTE:
+    -- WITH products AS (SELECT id, name, price FROM raw.products)
+    -- SELECT * FROM products
+
+
+YOUR PROJECT's MATERIALIZATION STRATEGY:
+
+    ┌──────────────────────────────────────────────────────────┐
+    │ Layer          │ Materialization │ Why                    │
+    ├──────────────────────────────────────────────────────────┤
+    │ stg_orders     │ VIEW           │ Cheap, always fresh    │
+    │ stg_line_items │ VIEW           │ Cheap, always fresh    │
+    │ stg_fulfills   │ VIEW           │ Cheap, always fresh    │
+    │ int_enriched   │ VIEW           │ Reusable, no storage   │
+    │ int_customers  │ VIEW           │ Reusable, no storage   │
+    │ fct_orders     │ TABLE          │ Fast queries for BI    │
+    │ fct_daily_rev  │ TABLE          │ Fast queries for BI    │
+    │ dim_customers  │ TABLE          │ Fast queries for BI    │
+    │ dim_products   │ TABLE          │ Fast queries for BI    │
+    └──────────────────────────────────────────────────────────┘
+
+
+================================================================================
+11. THE DAG — DIRECTED ACYCLIC GRAPH
+================================================================================
+
+DAG = the dependency tree of your models.
+
+    D = Directed (arrows go one way: source → target)
+    A = Acyclic (no circular dependencies allowed!)
+    G = Graph (visual representation of relationships)
+
+YOUR DAG:
+
+    ┌────────────────┐
+    │  raw_shopify.  │
+    │    orders      │     (SOURCE — external table)
+    └──────┬─────────┘
+           │
+    ┌──────┴──────────────────────────────────────────┐
+    │              │                                   │
+    ▼              ▼                                   ▼
+  stg_orders   stg_line_items                    stg_fulfillments
+    │              │                                   │
+    ├──────────────┤───────────────────────────────────┤
+    │              │                                   │
+    ▼              ▼                                   ▼
+  int_orders__enriched                    int_customers__order_history
+    │                                              │
+    ├───────────┐                                  │
+    ▼           ▼                                  ▼
+  fct_orders  fct_daily_revenue              dim_customers
+                                              
+              dim_products ◄── stg_line_items
+
+    WHY THE DAG MATTERS:
+    1. dbt runs models in the RIGHT ORDER (parents before children)
+    2. If stg_orders fails, dbt won't try to run fct_orders
+    3. You can see how a change in staging affects downstream tables
+    4. `dbt docs generate` creates an interactive visual DAG
+
+
+    CIRCULAR DEPENDENCY — WHAT YOU CAN'T DO:
+
+    ❌ model_a references model_b AND model_b references model_a
+    
+    -- model_a.sql
+    SELECT * FROM {{ ref('model_b') }}    ← depends on B
+    
+    -- model_b.sql  
+    SELECT * FROM {{ ref('model_a') }}    ← depends on A ❌ CIRCULAR!
+    
+    dbt will ERROR: "Found a cycle in the dependency graph"
+
+
+================================================================================
+12. dbt COMMANDS YOU NEED
+================================================================================
+
+    ┌──────────────────────┬──────────────────────────────────────────┐
+    │ Command              │ What It Does                             │
+    ├──────────────────────┼──────────────────────────────────────────┤
+    │ dbt run              │ Build ALL models (create tables/views)   │
+    │ dbt test             │ Run ALL tests defined in YAML            │
+    │ dbt build            │ Run + test (both in correct order)       │
+    │ dbt run -s model_x   │ Run ONLY model_x                       │
+    │ dbt run -s +model_x  │ Run model_x AND all its parents         │
+    │ dbt run -s model_x+  │ Run model_x AND all its children        │
+    │ dbt seed             │ Load all CSV files from seeds/ folder    │
+    │ dbt compile          │ Compile SQL (don't run — just preview)   │
+    │ dbt docs generate    │ Generate documentation website           │
+    │ dbt docs serve       │ Open documentation in browser            │
+    │ dbt clean            │ Delete target/ and dbt_packages/         │
+    │ dbt debug            │ Check connection and configuration       │
+    └──────────────────────┴──────────────────────────────────────────┘
+
+    SELECTOR SYNTAX (powerful!):
+    
+    dbt run -s staging.*              # All staging models
+    dbt run -s marts.core.*           # All core marts
+    dbt run -s tag:daily              # All models tagged 'daily'
+    dbt run -s +fct_orders            # fct_orders + all upstream
+    dbt run -s fct_orders+            # fct_orders + all downstream
+    dbt test -s stg_shopify__orders   # Test only this model
+
+
+================================================================================
+13. HOW IT ALL CONNECTS IN YOUR PROJECT
+================================================================================
+
+Let's trace a REAL data journey through YOUR project:
+
+    STEP 1: Raw Data Arrives
+    ────────────────────────
+    624 Shopify orders from JayCutler.com in JSONL format.
+    Each order has nested arrays: line_items, fulfillments, customer.
+    
+    File: RAW_DATASETS/bquxjob_...yourgpt.jsonl
+    
+    Order #JC730928:
+    - Customer: Jason Andrews (Ohio)
+    - Product: 3 Pack Multi Flavor Carnitine ($90.00)
+    - Discount: $40.00 (TikTok Platform & Seller)
+    - Total: $53.38
+    - Shipped: DHL eCommerce
+
+    STEP 2: Load to BigQuery
+    ────────────────────────
+    scripts/load_jsonl_to_bq.py → `saras-bigquery.raw_shopify.orders`
+    
+    Now the data is in BigQuery, but it's MESSY:
+    - Column names like "id" (not specific), "total_price" (unclear)
+    - Nested arrays take up huge text blobs
+    - Duplicate rows from multiple sync batches
+    - Some columns are strings but should be numbers
+
+    STEP 3: dbt Source Declaration
+    ──────────────────────────────
+    _shopify__sources.yml tells dbt:
+    "There's a table called 'orders' in raw_shopify dataset."
+    
+    Now you can write: {{ source('shopify_raw', 'orders') }}
+
+    STEP 4: Staging Models (dbt run)
+    ────────────────────────────────
+    stg_shopify__orders.sql:
+    - Renames: id → order_id, total_price → total_amount
+    - Casts: "50.00" → 50.00 (STRING to FLOAT64)
+    - Extracts: customer[0].id → customer_id
+    - Deduplicates: ROW_NUMBER() keeps latest sync
+    - Adds: window functions (customer_order_sequence, etc.)
+    - Excludes: nested arrays (handled separately)
+    
+    stg_shopify__order_line_items.sql:
+    - UNNESTs: line_items array → separate rows
+    - Result: Order with 3 products → 3 rows
+    
+    stg_shopify__fulfillments.sql:
+    - UNNESTs: fulfillments array → separate rows
+    - Calculates: hours_to_fulfill, days_to_fulfill
+
+    STEP 5: Intermediate Models
+    ───────────────────────────
+    int_orders__enriched.sql:
+    - Joins: orders + line_item_summary + fulfillment_summary
+    - Adds: line_item_count, total_quantity, is_canceled
+    
+    int_customers__order_history.sql:
+    - Aggregates: all orders per customer
+    - Creates: RFM segments (frequency, recency, value)
+
+    STEP 6: Mart Models
+    ───────────────────
+    fct_orders:      One row per order, all metrics
+    fct_daily_revenue: One row per day, aggregated revenue
+    dim_customers:   One row per customer, RFM segmentation
+    dim_products:    One row per product, sales rankings
+
+    STEP 7: Tests Validate Everything
+    ─────────────────────────────────
+    49 tests check:
+    - order_id is unique and not null
+    - customer_id exists in dim_customers
+    - payment_status has valid values only
+    - All foreign keys are valid
+
+
+================================================================================
+SUMMARY — dbt IN ONE SENTENCE
+================================================================================
+
+    dbt lets you write SQL SELECT statements as files,
+    organizes them into layers (staging → intermediate → marts),
+    automatically figures out dependencies (DAG),
+    creates tables/views in your warehouse,
+    and tests that the data is correct.
+
+    That's it. That's dbt.
+
+
+================================================================================
+NEXT: Read 02_models_and_modelling.txt for a deep dive into models
+================================================================================

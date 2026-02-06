@@ -124,7 +124,7 @@ deduplicated AS (
         *,
         ROW_NUMBER() OVER (
             PARTITION BY order_id
-            ORDER BY synced_at DESC
+            ORDER BY synced_at DESC, order_updated_at DESC, _daton_batch_id DESC
         ) AS _dedup_row_num
     FROM renamed
 ),
